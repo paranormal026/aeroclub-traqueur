@@ -98,11 +98,13 @@ def connecter_simconnect():
             aq = AircraftRequests(sim, _time=50)
             print("✅ Connexion à SimConnect (MSFS) initialisée avec succès !")
             return sim, aq
-        except Exception:
+        except Exception as e:
             tentative += 1
             if tentative == 1:
                 print("⏳ MSFS n'est pas encore lancé (ou pas prêt). En attente...")
                 print("   Laisse cette fenêtre ouverte et lance/termine de charger MSFS 2020 ou 2024.")
+            if tentative % 5 == 0:
+                print(f"   [Diagnostic] Tentative {tentative} — erreur : {type(e).__name__}: {e}")
             time.sleep(5)
 
 
