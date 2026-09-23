@@ -26,7 +26,7 @@ jobs:
           Copy-Item "SimConnect.dll" "$pkgDir\SimConnect.dll" -Force
 
       - name: Build exe
-        run: pyinstaller --onefile --name traqueur traqueur.py
+        run: pyinstaller --onefile --name traqueur --add-binary "SimConnect.dll;SimConnect" traqueur.py
 
       - uses: actions/upload-artifact@v4
         with:
