@@ -13,6 +13,15 @@ except ImportError:
     input("Appuyez sur Entrée pour fermer...")
     sys.exit()
 
+# Quand l'exe est compile (PyInstaller onefile), les DLL sont extraites dans un dossier
+# temporaire (_MEIPASS). Sur certains systemes, Windows ne cherche pas les dependances
+# d'un DLL charge par ctypes dans ce dossier par defaut : on l'ajoute explicitement.
+if getattr(sys, 'frozen', False) and hasattr(os, 'add_dll_directory'):
+    try:
+        os.add_dll_directory(sys._MEIPASS)
+    except Exception:
+        pass
+
 BASE_URL = "https://aeroclubmanager.fr/msfs"
 VERSION_ACTUELLE = 1
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])), 'config.json')
