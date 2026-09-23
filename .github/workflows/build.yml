@@ -19,6 +19,12 @@ jobs:
       - name: Install dependencies
         run: pip install pyinstaller requests SimConnect
 
+      - name: Replace SimConnect.dll with the MSFS 2024 SDK version
+        shell: pwsh
+        run: |
+          $pkgDir = python -c "import SimConnect, os; print(os.path.dirname(SimConnect.__file__))"
+          Copy-Item "SimConnect.dll" "$pkgDir\SimConnect.dll" -Force
+
       - name: Build exe
         run: pyinstaller --onefile --name traqueur traqueur.py
 
@@ -26,4 +32,3 @@ jobs:
         with:
           name: traqueur-exe
           path: dist/traqueur.exe
-
