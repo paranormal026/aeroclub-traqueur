@@ -23,7 +23,7 @@ if getattr(sys, 'frozen', False) and hasattr(os, 'add_dll_directory'):
         pass
 
 BASE_URL = "https://aeroclubmanager.fr/msfs"
-VERSION_ACTUELLE = 1
+VERSION_ACTUELLE = 2
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])), 'config.json')
 
 
@@ -138,6 +138,17 @@ def get_exam_status():
     return {"exam_active": 0, "exam_arr": None, "vac_points": {}}
 
 
+def envoyer_telemetrie_live(status_data):
+    """Envoie la telemetrie en direct au serveur pour alimenter le panneau MSFS LIVE TRACKER
+    de la page flight_plan.php (sinon la page ne recoit jamais rien pendant le vol)."""
+    try:
+        payload = dict(status_data)
+        payload['api_token'] = API_TOKEN
+        requests.post(f"{BASE_URL}/api_tracker.php", json=payload, timeout=5)
+    except Exception:
+        pass  # une perte de connexion ponctuelle ne doit pas interrompre le vol
+
+
 print("=" * 60)
 print("⚖️ Traqueur MSFS & Juge de Paix Démarrés...")
 print("=" * 60)
@@ -166,10 +177,12 @@ try:
                 lat = aq.get("PLANE_LATITUDE") or 0.0
                 lon = aq.get("PLANE_LONGITUDE") or 0.0
                 alt = aq.get("PLANE_ALTITUDE") or 0.0
+                agl = aq.get("PLANE_ALT_ABOVE_GROUND") or 0.0
                 speed = aq.get("AIRSPEED_INDICATED") or 0.0
                 vertical_speed = aq.get("VERTICAL_SPEED") or 0.0
                 sim_on_ground = int(aq.get("SIM_ON_GROUND") or 1)
                 engine_on = int(aq.get("GENERAL_ENG_COMBUSTION:1") or 1)
+                g_force = aq.get("G_FORCE") or 1.0
                 fuel_qty = aq.get("FUEL_TOTAL_QUANTITY") or 0.0
                 fuel_cap = aq.get("FUEL_TOTAL_CAPACITY") or 1.0
                 fuel_percent = (fuel_qty / fuel_cap) * 100 if fuel_cap > 0 else 100.0
@@ -220,13 +233,16 @@ try:
             last_lat = lat
             last_lon = lon
 
-            # Envoi des données JSON locales
+            # Statut complet (envoye au serveur en direct + garde une copie locale)
             status_data = {
                 "timestamp": int(time.time()), "latitude": lat, "longitude": lon, "altitude": alt,
-                "speed": speed, "vertical_speed": vertical_speed, "flown_distance": total_distance_nm,
+                "agl": agl, "speed": speed, "vertical_speed": vertical_speed, "g_force": g_force,
+                "flown_distance": total_distance_nm,
                 "fuel_percent": fuel_percent, "on_ground": on_ground, "engine_on": engine_on,
                 "vac_message": message_vac, "exam_active": 1 if exam_status.get('exam_active') == 1 else 0
             }
+
+            envoyer_telemetrie_live(status_data)
 
             json_path = os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])), 'live_status.json')
             with open(json_path, 'w', encoding='utf-8') as f:
