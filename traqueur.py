@@ -23,7 +23,7 @@ if getattr(sys, 'frozen', False) and hasattr(os, 'add_dll_directory'):
         pass
 
 BASE_URL = "https://aeroclubmanager.fr/msfs"
-VERSION_ACTUELLE = 4
+VERSION_ACTUELLE = 5
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])), 'config.json')
 
 
@@ -314,6 +314,8 @@ etat_precedent_sol = 1
 derniere_vitesse_verticale = 0.0
 exam_status = get_exam_status()
 dernier_check_exam = time.time()
+titre_avion = ""
+dernier_check_titre = 0.0
 
 try:
     while True:
@@ -322,6 +324,17 @@ try:
             if time.time() - dernier_check_exam >= 10:
                 exam_status = get_exam_status()
                 dernier_check_exam = time.time()
+
+            # Nom de l'appareil (aircraft.cfg) : permet a la tablette EFB de choisir la bonne checklist
+            if time.time() - dernier_check_titre >= 10:
+                dernier_check_titre = time.time()
+                try:
+                    t = aq.get("TITLE")
+                    if isinstance(t, bytes):
+                        t = t.decode("utf-8", "ignore")
+                    titre_avion = (t or "").replace("\x00", "").strip()
+                except Exception:
+                    pass
 
             try:
                 lat = aq.get("PLANE_LATITUDE") or 0.0
@@ -392,7 +405,8 @@ try:
                 "agl": agl, "speed": speed, "vertical_speed": vertical_speed, "g_force": g_force,
                 "flown_distance": total_distance_nm,
                 "fuel_percent": fuel_percent, "on_ground": on_ground, "engine_on": engine_on,
-                "vac_message": message_vac, "exam_active": 1 if exam_status.get('exam_active') == 1 else 0
+                "vac_message": message_vac, "exam_active": 1 if exam_status.get('exam_active') == 1 else 0,
+                "aircraft_model": titre_avion
             }
 
             envoyer_telemetrie_live(status_data)
