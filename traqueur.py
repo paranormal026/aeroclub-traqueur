@@ -23,7 +23,7 @@ if getattr(sys, 'frozen', False) and hasattr(os, 'add_dll_directory'):
         pass
 
 BASE_URL = "https://aeroclubmanager.fr/msfs"
-VERSION_ACTUELLE = 5
+VERSION_ACTUELLE = 6
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])), 'config.json')
 
 
@@ -122,6 +122,23 @@ def charger_token():
 
 
 API_TOKEN = charger_token()
+
+
+def verifier_token(token):
+    """True si le site accepte la cle, False si elle est refusee, None si le site est injoignable."""
+    try:
+        r = requests.get(f"{BASE_URL}/api_efb.php", params={"action": "package_info", "api_token": token}, timeout=10)
+        return r.status_code != 401
+    except Exception:
+        return None
+
+
+if verifier_token(API_TOKEN) is False:
+    print("\n❌ Ta clé API n'est plus valide (compte recréé ou clé régénérée sur le site).")
+    _cfg = charger_config()
+    _cfg.pop('api_token', None)
+    sauver_config(_cfg)
+    API_TOKEN = charger_token()
 
 
 # =========================================================
@@ -244,6 +261,102 @@ try:
     configurer_lancement_auto()
 except Exception as e:
     print(f"⚠️ Lancement automatique non configure ({e}). Le traqueur fonctionne normalement.")
+
+
+# =========================================================
+# APP DE LA TABLETTE EFB (MSFS 2024) : installation / mise a jour automatique dans Community
+# =========================================================
+NOM_PAQUET_EFB = "aeroclubmanager-efb"
+DOSSIER_APP_EFB = ("html_ui", "efb_ui", "efb_apps", "AeroClubManager")
+
+
+def dossier_community(dossier_msfs):
+    """Dossier Community indique par InstalledPackagesPath dans le UserCfg.opt du simulateur."""
+    try:
+        with open(os.path.join(dossier_msfs, "UserCfg.opt"), "r", encoding="utf-8", errors="ignore") as f:
+            for ligne in f:
+                ligne = ligne.strip()
+                if ligne.startswith("InstalledPackagesPath"):
+                    chemin = ligne[len("InstalledPackagesPath"):].strip().strip('"')
+                    communaute = os.path.join(chemin, "Community")
+                    return communaute if os.path.isdir(communaute) else None
+    except Exception:
+        pass
+    return None
+
+
+def regenerer_layout(racine):
+    """MSFS ne voit que les fichiers listes dans layout.json : on le reecrit apres ajout du config.json."""
+    contenu = []
+    for dossier, _sous, fichiers in os.walk(racine):
+        for nom in fichiers:
+            if nom in ("layout.json", "manifest.json"):
+                continue
+            chemin = os.path.join(dossier, nom)
+            st = os.stat(chemin)
+            contenu.append({
+                "path": os.path.relpath(chemin, racine).replace(os.sep, "/"),
+                "size": st.st_size,
+                "date": int((st.st_mtime + 11644473600) * 10**7),  # FILETIME Windows
+            })
+    contenu.sort(key=lambda e: e["path"])
+    with open(os.path.join(racine, "layout.json"), "w", encoding="utf-8") as f:
+        json.dump({"content": contenu}, f, indent=2)
+
+
+def installer_app_efb():
+    if not getattr(sys, 'frozen', False):
+        return
+    import io
+    import shutil
+    import tempfile
+    import zipfile
+
+    cfg = charger_config()
+    dossiers = [d for d in cfg.get('dossiers_msfs', []) if os.path.isdir(d)] or detecter_dossiers_msfs()
+    communautes = [c for c in (dossier_community(d) for d in dossiers) if c]
+    if not communautes:
+        return
+    try:
+        version = requests.get(f"{BASE_URL}/api_efb.php", params={"action": "package_info", "api_token": API_TOKEN}, timeout=10).json().get("version")
+    except Exception:
+        return
+    if not version:
+        return
+
+    installe = cfg.get('efb_installe', {})
+    a_faire = [c for c in communautes
+               if installe.get(c) != version or not os.path.isdir(os.path.join(c, NOM_PAQUET_EFB, *DOSSIER_APP_EFB))]
+    if not a_faire:
+        return
+
+    print(f"📲 Installation de l'app AeroClubManager dans la tablette EFB de MSFS (version {version})...")
+    r = requests.get(f"{BASE_URL}/api_efb.php", params={"action": "package", "api_token": API_TOKEN}, timeout=60)
+    r.raise_for_status()
+    tmp = tempfile.mkdtemp(prefix="acm_efb_")
+    try:
+        zipfile.ZipFile(io.BytesIO(r.content)).extractall(tmp)
+        source = os.path.join(tmp, NOM_PAQUET_EFB)
+        for communaute in a_faire:
+            cible = os.path.join(communaute, NOM_PAQUET_EFB)
+            if os.path.isdir(cible):
+                shutil.rmtree(cible)
+            shutil.copytree(source, cible)
+            with open(os.path.join(cible, *DOSSIER_APP_EFB, "config.json"), "w", encoding="utf-8") as f:
+                json.dump({"api_token": API_TOKEN}, f)
+            regenerer_layout(cible)
+            installe[communaute] = version
+            print(f"✅ App EFB installée dans {cible} (visible dans la tablette au prochain démarrage de MSFS).")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    cfg['efb_installe'] = installe
+    sauver_config(cfg)
+
+
+try:
+    installer_app_efb()
+except Exception as e:
+    print(f"⚠️ Installation de l'app EFB impossible ({e}). Le traqueur fonctionne normalement.")
 
 
 def connecter_simconnect():
