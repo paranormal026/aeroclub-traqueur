@@ -23,7 +23,7 @@ if getattr(sys, 'frozen', False) and hasattr(os, 'add_dll_directory'):
         pass
 
 BASE_URL = "https://aeroclubmanager.fr/msfs"
-VERSION_ACTUELLE = 2
+VERSION_ACTUELLE = 3
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])), 'config.json')
 
 
@@ -180,8 +180,11 @@ try:
                 agl = aq.get("PLANE_ALT_ABOVE_GROUND") or 0.0
                 speed = aq.get("AIRSPEED_INDICATED") or 0.0
                 vertical_speed = aq.get("VERTICAL_SPEED") or 0.0
-                sim_on_ground = int(aq.get("SIM_ON_GROUND") or 1)
-                engine_on = int(aq.get("GENERAL_ENG_COMBUSTION:1") or 1)
+                # Attention : "x or 1" transformerait un 0 legitime (en vol / moteur coupe) en 1
+                sog = aq.get("SIM_ON_GROUND")
+                sim_on_ground = int(sog) if sog is not None else 1
+                eng = aq.get("GENERAL_ENG_COMBUSTION:1")
+                engine_on = int(eng) if eng is not None else 1
                 g_force = aq.get("G_FORCE") or 1.0
                 fuel_qty = aq.get("FUEL_TOTAL_QUANTITY") or 0.0
                 fuel_cap = aq.get("FUEL_TOTAL_CAPACITY") or 1.0
@@ -211,7 +214,7 @@ try:
             derniere_vitesse_verticale = vertical_speed
             # =========================================================
 
-            on_ground = 0 if (speed > 50 and alt > 20) else sim_on_ground
+            on_ground = sim_on_ground
 
             # Validation des points VAC (si examen actif)
             message_vac = None
