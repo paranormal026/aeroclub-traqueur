@@ -23,7 +23,7 @@ if getattr(sys, 'frozen', False) and hasattr(os, 'add_dll_directory'):
         pass
 
 BASE_URL = "https://aeroclubmanager.fr/msfs"
-VERSION_ACTUELLE = 6
+VERSION_ACTUELLE = 7
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])), 'config.json')
 
 
@@ -359,6 +359,116 @@ except Exception as e:
     print(f"⚠️ Installation de l'app EFB impossible ({e}). Le traqueur fonctionne normalement.")
 
 
+NOM_PAQUET_FX = "aeroclubmanager-fx"
+
+
+def installer_effets_mission():
+    """Installe (ou met a jour) le paquet des effets de mission : feux, fumigenes de guidage et de vent."""
+    if not getattr(sys, 'frozen', False):
+        return
+    import io
+    import shutil
+    import tempfile
+    import zipfile
+
+    cfg = charger_config()
+    dossiers = [d for d in cfg.get('dossiers_msfs', []) if os.path.isdir(d)] or detecter_dossiers_msfs()
+    communautes = [c for c in (dossier_community(d) for d in dossiers) if c]
+    if not communautes:
+        return
+    try:
+        version = requests.get(f"{BASE_URL}/api_efb.php", params={"action": "package_info", "name": "fx", "api_token": API_TOKEN}, timeout=10).json().get("version")
+    except Exception:
+        return
+    if not version:
+        return
+
+    installe = cfg.get('fx_installe', {})
+    a_faire = [c for c in communautes
+               if installe.get(c) != version or not os.path.isdir(os.path.join(c, NOM_PAQUET_FX, "SimObjects"))]
+    if not a_faire:
+        return
+
+    print(f"🔥 Installation des effets de mission (feux, fumigènes) dans MSFS (version {version})...")
+    r = requests.get(f"{BASE_URL}/api_efb.php", params={"action": "package", "name": "fx", "api_token": API_TOKEN}, timeout=60)
+    r.raise_for_status()
+    tmp = tempfile.mkdtemp(prefix="acm_fx_")
+    try:
+        zipfile.ZipFile(io.BytesIO(r.content)).extractall(tmp)
+        source = os.path.join(tmp, NOM_PAQUET_FX)
+        for communaute in a_faire:
+            cible = os.path.join(communaute, NOM_PAQUET_FX)
+            if os.path.isdir(cible):
+                shutil.rmtree(cible)
+            shutil.copytree(source, cible)
+            regenerer_layout(cible)
+            installe[communaute] = version
+            print(f"✅ Effets de mission installés dans {cible} (actifs au prochain démarrage de MSFS).")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    cfg['fx_installe'] = installe
+    sauver_config(cfg)
+
+
+try:
+    installer_effets_mission()
+except Exception as e:
+    print(f"⚠️ Installation des effets de mission impossible ({e}). Le traqueur fonctionne normalement.")
+
+
+class EffetsMission:
+    """Feux et fumigenes des missions speciales (incendie, ravitaillement), poses dans le simulateur.
+    Ils passent par une connexion SimConnect dediee : la fermer retire d'un coup tous les objets
+    qu'elle a crees. Le serveur decrit les effets a afficher ; une nouvelle "cle" (par exemple le
+    feu qui passe de grand a moyen apres un largage) remplace l'ensemble des effets."""
+
+    def __init__(self):
+        self.sc = None
+        self.cle = None
+        self.dernier_check = 0.0
+
+    def fermer(self):
+        if self.sc is not None:
+            try:
+                self.sc.exit()
+            except Exception:
+                pass
+            self.sc = None
+
+    def reinitialiser(self):
+        """Apres une reconnexion a MSFS : les anciens objets ont disparu, il faudra les recreer."""
+        self.sc = None
+        self.cle = None
+        self.dernier_check = 0.0
+
+    def mettre_a_jour(self):
+        if time.time() - self.dernier_check < 10:
+            return
+        self.dernier_check = time.time()
+        try:
+            d = requests.get(f"{BASE_URL}/api_efb.php", params={"action": "mission_fx", "api_token": API_TOKEN}, timeout=5).json()
+        except Exception:
+            return  # serveur injoignable : on garde les effets actuels
+        if d.get("status") != "success":
+            return
+        cle = d.get("key") or ""
+        if cle == self.cle:
+            return
+        self.cle = cle
+        self.fermer()
+        effets = d.get("effects") or []
+        if not effets:
+            return
+        from SimConnect import SimConnect
+        from SimConnect.Enum import SIMCONNECT_DATA_INITPOSITION
+        self.sc = SimConnect()
+        for i, e in enumerate(effets):
+            # OnGround=1 : le simulateur pose l'objet sur le relief, quelle que soit l'altitude donnee
+            pos = SIMCONNECT_DATA_INITPOSITION(float(e["lat"]), float(e["lon"]), float(e.get("alt_ft", 0)), 0.0, 0.0, 0.0, 1, 0)
+            self.sc.dll.AICreateSimulatedObject(self.sc.hSimConnect, str(e["title"]).encode("ascii", "ignore"), pos, 1000 + i)
+        print(f"🔥 {len(effets)} effet(s) de mission placé(s) dans le simulateur : {d.get('label', '')}")
+
+
 def connecter_simconnect():
     """Attend que MSFS 2020/2024 soit lancé et prêt, en réessayant en continu
     (au lieu d'un essai unique au démarrage qui échoue si le traqueur est lancé avant le simulateur)."""
@@ -429,6 +539,7 @@ exam_status = get_exam_status()
 dernier_check_exam = time.time()
 titre_avion = ""
 dernier_check_titre = 0.0
+effets_mission = EffetsMission()
 
 try:
     while True:
@@ -468,8 +579,28 @@ try:
             except Exception:
                 # MSFS a probablement été fermé ou n'a pas encore terminé de charger : on retente une connexion propre
                 print("⚠️ Connexion à MSFS perdue ou non prête. Nouvelle tentative...")
+                effets_mission.reinitialiser()
                 sim, aq = connecter_simconnect()
                 continue
+
+            # Donnees des missions speciales : ecopage (sur l'eau), largage (chute de masse), vent pour la precision
+            extra = {}
+            for cle_srv, simvar in (("ground_speed", "GROUND_VELOCITY"), ("heading_rad", "PLANE_HEADING_DEGREES_TRUE"),
+                                    ("total_weight_lbs", "TOTAL_WEIGHT"), ("surface_type", "SURFACE_TYPE"),
+                                    ("wind_dir", "AMBIENT_WIND_DIRECTION"), ("wind_kt", "AMBIENT_WIND_VELOCITY")):
+                try:
+                    v = aq.get(simvar)
+                    if v is not None:
+                        extra[cle_srv] = v
+                except Exception:
+                    pass
+
+            # Feux et fumigenes de la mission en cours (pas de lat/lon valide dans les menus du jeu)
+            if abs(lat) > 0.01:
+                try:
+                    effets_mission.mettre_a_jour()
+                except Exception:
+                    effets_mission.reinitialiser()
 
             # =========================================================
             # ⚖️ LE JUGE DE PAIX : DÉTECTION DU TOUCHDOWN
@@ -521,6 +652,7 @@ try:
                 "vac_message": message_vac, "exam_active": 1 if exam_status.get('exam_active') == 1 else 0,
                 "aircraft_model": titre_avion
             }
+            status_data.update(extra)
 
             envoyer_telemetrie_live(status_data)
 
@@ -534,4 +666,5 @@ try:
         time.sleep(1)  # 1 seconde pour une bonne précision du touchdown
 
 except KeyboardInterrupt:
+    effets_mission.fermer()
     print("\n🛑 Arrêt du Traqueur.")
