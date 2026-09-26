@@ -23,7 +23,7 @@ if getattr(sys, 'frozen', False) and hasattr(os, 'add_dll_directory'):
         pass
 
 BASE_URL = "https://aeroclubmanager.fr/msfs"
-VERSION_ACTUELLE = 8
+VERSION_ACTUELLE = 9
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])), 'config.json')
 
 
@@ -430,7 +430,8 @@ def installer_services_sol():
         version = requests.get(f"{BASE_URL}/api_efb.php", params={"action": "package_info", "name": "sol", "api_token": API_TOKEN}, timeout=10).json().get("version")
     except Exception:
         return
-    if not version or (cfg.get('sol_installe') == version and os.path.isfile(os.path.join(DOSSIER_SOL, 'AcmSol.exe'))):
+    if not version or (cfg.get('sol_installe') == version and os.path.isfile(os.path.join(DOSSIER_SOL, 'AcmSol.exe'))
+                       and os.path.isfile(os.path.join(DOSSIER_SOL, 'AcmPilotage.exe'))):
         return
     print(f"🚗 Installation des services au sol (véhicules et passagers à l'embarquement, version {version})...")
     r = requests.get(f"{BASE_URL}/api_efb.php", params={"action": "package", "name": "sol", "api_token": API_TOKEN}, timeout=60)
@@ -567,6 +568,105 @@ class EffetsMission:
         print(f"🔥 {len(effets)} effet(s) de mission placé(s) dans le simulateur : {d.get('label', '')}")
 
 
+# Pannes reelles : le site simule l'usure des pieces ; une piece a bout de souffle declenche la vraie panne dans MSFS
+PANNES_EVENEMENTS = {
+    'moteur': 'TOGGLE_ENGINE1_FAILURE', 'electrique': 'TOGGLE_ELECTRICAL_FAILURE', 'pitot': 'TOGGLE_PITOT_BLOCKAGE',
+    'statique': 'TOGGLE_STATIC_PORT_BLOCKAGE', 'depression': 'TOGGLE_VACUUM_FAILURE', 'hydraulique': 'TOGGLE_HYDRAULIC_FAILURE',
+    'freins': 'TOGGLE_TOTAL_BRAKE_FAILURE',
+}
+PANNES_NOMS = {
+    'moteur': 'panne moteur', 'electrique': 'panne électrique', 'pitot': 'tube de Pitot obstrué (anémomètre faux)',
+    'statique': 'prise statique bouchée (altimètre et variomètre faux)', 'depression': 'pompe à vide HS (horizon et conservateur de cap)',
+    'hydraulique': 'fuite hydraulique', 'freins': 'freins inopérants',
+}
+
+
+class PannesReelles:
+    """Declenche une fois chaque panne annoncee par le serveur (le serveur ne l'annonce aussi qu'une fois par vol)."""
+
+    def __init__(self):
+        self.faites = set()
+
+    def appliquer(self, sim, pannes):
+        for code in pannes or []:
+            if code in self.faites or code not in PANNES_EVENEMENTS:
+                continue
+            self.faites.add(code)
+            try:
+                from SimConnect.EventList import Event
+                Event(PANNES_EVENEMENTS[code].encode(), sim)()
+                print(f"\n🚨 PANNE RÉELLE : {PANNES_NOMS[code]} ! (pièce trop usée d'après l'atelier) Gérez la situation et posez-vous.")
+            except Exception as e:
+                print(f"⚠️ Impossible de déclencher la panne {code} dans MSFS ({e}).")
+
+
+class Pilotage:
+    """Missions speciales avec objets animes (planeur remorque, banderole, ailiers de patrouille, avion suspect) :
+    lance AcmPilotage.exe avec les parametres donnes par le site, l'arrete quand la mission se termine."""
+
+    def __init__(self):
+        self.proc = None
+        self.cle = ''
+        self.dernier = 0.0
+        self.relances = 0
+
+    def arreter(self):
+        if self.proc is None:
+            return
+        try:
+            open(os.path.join(DOSSIER_SOL, 'stop_pilotage'), 'w').close()
+        except Exception:
+            pass
+        try:
+            self.proc.wait(timeout=6)
+        except Exception:
+            try:
+                self.proc.kill()
+            except Exception:
+                pass
+        self.proc = None
+
+    def reinitialiser(self):
+        """Apres une reconnexion a MSFS : les objets ont disparu, il faudra relancer le programme."""
+        self.arreter()
+        self.cle = ''
+
+    def maj(self):
+        if time.time() - self.dernier < 10:
+            return
+        self.dernier = time.time()
+        exe = os.path.join(DOSSIER_SOL, 'AcmPilotage.exe')
+        if not os.path.isfile(exe):
+            return
+        try:
+            d = requests.get(f"{BASE_URL}/api_efb.php", params={"action": "pilotage", "api_token": API_TOKEN}, timeout=5).json()
+        except Exception:
+            return
+        if d.get('status') != 'success':
+            return
+        cle = d.get('key') or ''
+        en_cours = self.proc is not None and self.proc.poll() is None
+        if cle == self.cle and (en_cours or not cle):
+            return
+        if cle == self.cle and not en_cours:
+            # Le programme s'est arrete (simulateur recharge ?) : on le relance, 3 fois au plus
+            self.relances += 1
+            if self.relances > 3:
+                return
+        else:
+            self.relances = 0
+        self.arreter()
+        self.cle = cle
+        if not cle:
+            print("🎮 Fin de la mission : objets animés retirés du simulateur.")
+            return
+        with open(os.path.join(DOSSIER_SOL, 'pilotage.json'), 'w', encoding='utf-8') as f:
+            json.dump(d, f)
+        import subprocess
+        self.proc = subprocess.Popen([exe, os.path.join(DOSSIER_SOL, 'pilotage.json')], cwd=DOSSIER_SOL, creationflags=0x08000000)
+        print(f"🎮 Objets de mission animés dans MSFS : {d.get('label', '')}")
+
+
 def connecter_simconnect():
     """Attend que MSFS 2020/2024 soit lancé et prêt, en réessayant en continu
     (au lieu d'un essai unique au démarrage qui échoue si le traqueur est lancé avant le simulateur)."""
@@ -615,9 +715,10 @@ def envoyer_telemetrie_live(status_data):
     try:
         payload = dict(status_data)
         payload['api_token'] = API_TOKEN
-        requests.post(f"{BASE_URL}/api_tracker.php", json=payload, timeout=5)
+        r = requests.post(f"{BASE_URL}/api_tracker.php", json=payload, timeout=5)
+        return r.json() if r.ok else {}
     except Exception:
-        pass  # une perte de connexion ponctuelle ne doit pas interrompre le vol
+        return {}  # une perte de connexion ponctuelle ne doit pas interrompre le vol
 
 
 print("=" * 60)
@@ -639,6 +740,8 @@ titre_avion = ""
 dernier_check_titre = 0.0
 effets_mission = EffetsMission()
 services_sol = ServicesSol()
+pannes_reelles = PannesReelles()
+pilotage = Pilotage()
 
 try:
     while True:
@@ -679,6 +782,7 @@ try:
                 # MSFS a probablement été fermé ou n'a pas encore terminé de charger : on retente une connexion propre
                 print("⚠️ Connexion à MSFS perdue ou non prête. Nouvelle tentative...")
                 effets_mission.reinitialiser()
+                pilotage.reinitialiser()
                 sim, aq = connecter_simconnect()
                 continue
 
@@ -694,12 +798,27 @@ try:
                 except Exception:
                     pass
 
+            try:
+                b = aq.get("PLANE_BANK_DEGREES")
+                p = aq.get("PLANE_PITCH_DEGREES")
+                if b is not None:
+                    extra['bank_deg'] = round(math.degrees(b), 1)
+                if p is not None:
+                    extra['pitch_deg'] = round(-math.degrees(p), 1)
+            except Exception:
+                pass
+
             # Feux et fumigenes de la mission en cours (pas de lat/lon valide dans les menus du jeu)
             if abs(lat) > 0.01:
                 try:
                     effets_mission.mettre_a_jour()
                 except Exception:
                     effets_mission.reinitialiser()
+                # Objets animes des missions speciales (planeur, banderole, ailiers, avion suspect)
+                try:
+                    pilotage.maj()
+                except Exception:
+                    pass
                 # Services au sol (vehicule + passagers) au depart de la mission
                 try:
                     services_sol.maj(lat, lon, sim_on_ground == 1, float(extra.get('ground_speed', speed) or 0))
@@ -758,7 +877,8 @@ try:
             }
             status_data.update(extra)
 
-            envoyer_telemetrie_live(status_data)
+            reponse_serveur = envoyer_telemetrie_live(status_data)
+            pannes_reelles.appliquer(sim, (reponse_serveur or {}).get('pannes'))
 
             json_path = os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])), 'live_status.json')
             with open(json_path, 'w', encoding='utf-8') as f:
