@@ -23,7 +23,7 @@ if getattr(sys, 'frozen', False) and hasattr(os, 'add_dll_directory'):
         pass
 
 BASE_URL = "https://aeroclubmanager.fr/msfs"
-VERSION_ACTUELLE = 7
+VERSION_ACTUELLE = 8
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])), 'config.json')
 
 
@@ -416,6 +416,104 @@ except Exception as e:
     print(f"⚠️ Installation des effets de mission impossible ({e}). Le traqueur fonctionne normalement.")
 
 
+DOSSIER_SOL = os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])), 'services_sol')
+
+
+def installer_services_sol():
+    """Telecharge (ou met a jour) le programme des services au sol, a cote du traqueur."""
+    if not getattr(sys, 'frozen', False):
+        return
+    import io
+    import zipfile
+    cfg = charger_config()
+    try:
+        version = requests.get(f"{BASE_URL}/api_efb.php", params={"action": "package_info", "name": "sol", "api_token": API_TOKEN}, timeout=10).json().get("version")
+    except Exception:
+        return
+    if not version or (cfg.get('sol_installe') == version and os.path.isfile(os.path.join(DOSSIER_SOL, 'AcmSol.exe'))):
+        return
+    print(f"🚗 Installation des services au sol (véhicules et passagers à l'embarquement, version {version})...")
+    r = requests.get(f"{BASE_URL}/api_efb.php", params={"action": "package", "name": "sol", "api_token": API_TOKEN}, timeout=60)
+    r.raise_for_status()
+    os.makedirs(DOSSIER_SOL, exist_ok=True)
+    with zipfile.ZipFile(io.BytesIO(r.content)) as z:
+        for info in z.infolist():
+            nom = info.filename.split('/', 1)[-1]
+            if not nom or info.is_dir():
+                continue
+            with open(os.path.join(DOSSIER_SOL, os.path.basename(nom)), 'wb') as f:
+                f.write(z.read(info))
+    cfg['sol_installe'] = version
+    sauver_config(cfg)
+    print("✅ Services au sol installés.")
+
+
+try:
+    installer_services_sol()
+except Exception as e:
+    print(f"⚠️ Installation des services au sol impossible ({e}). Le traqueur fonctionne normalement.")
+
+
+class ServicesSol:
+    """Au depart d'une mission, avion immobile au sol sur l'aerodrome de depart : lance AcmSol.exe une seule fois
+    par mission (vehicule qui arrive par le reseau de circulation, passagers qui embarquent a l'ouverture de la porte,
+    poids ajoute a l'avion)."""
+
+    def __init__(self):
+        self.proc = None
+        self.immobile_depuis = None
+        self.dernier_check = 0.0
+
+    def maj(self, lat, lon, au_sol, vitesse_sol):
+        if self.proc is not None:
+            if self.proc.poll() is None:
+                return  # services au sol en cours
+            self.proc = None
+            try:
+                with open(os.path.join(DOSSIER_SOL, 'resultat.json'), encoding='utf-8') as f:
+                    r = json.load(f)
+                if r.get('ok'):
+                    print(f"✅ Embarquement terminé : {r.get('walkers_boarded', 0)} passager(s) à pied, poids ajouté : {'oui' if r.get('payload_set') else 'non'}.")
+                elif r.get('erreur'):
+                    print(f"⚠️ Services au sol interrompus : {r.get('erreur')}")
+            except Exception:
+                pass
+        if not au_sol or vitesse_sol > 1 or abs(lat) < 0.01:
+            self.immobile_depuis = None
+            return
+        if self.immobile_depuis is None:
+            self.immobile_depuis = time.time()
+        if time.time() - self.immobile_depuis < 8 or time.time() - self.dernier_check < 15:
+            return
+        self.dernier_check = time.time()
+        exe = os.path.join(DOSSIER_SOL, 'AcmSol.exe')
+        if not os.path.isfile(exe):
+            return
+        try:
+            d = requests.get(f"{BASE_URL}/api_efb.php", params={"action": "ground_ops", "api_token": API_TOKEN}, timeout=5).json()
+        except Exception:
+            return
+        cle = d.get('key') or ''
+        if not cle:
+            return
+        cfg = charger_config()
+        faites = cfg.get('sol_fait', [])
+        if cle in faites:
+            return  # embarquement deja fait pour cette mission
+        dep = d.get('departure')
+        if dep and calculer_distance_km(lat, lon, dep['lat'], dep['lon']) > 5:
+            return  # pas encore sur l'aerodrome de depart de la mission
+        params = dict(d.get('params') or {})
+        params['result'] = os.path.join(DOSSIER_SOL, 'resultat.json')
+        with open(os.path.join(DOSSIER_SOL, 'parametres.json'), 'w', encoding='utf-8') as f:
+            json.dump(params, f)
+        import subprocess
+        self.proc = subprocess.Popen([exe, os.path.join(DOSSIER_SOL, 'parametres.json')], cwd=DOSSIER_SOL, creationflags=0x08000000)
+        cfg['sol_fait'] = (faites + [cle])[-20:]
+        sauver_config(cfg)
+        print(f"🚗 Services au sol pour « {d.get('label', 'la mission')} » : le véhicule arrive, ouvrez la porte pour l'embarquement ({params.get('pax_total', 0)} passager(s)).")
+
+
 class EffetsMission:
     """Feux et fumigenes des missions speciales (incendie, ravitaillement), poses dans le simulateur.
     Ils passent par une connexion SimConnect dediee : la fermer retire d'un coup tous les objets
@@ -540,6 +638,7 @@ dernier_check_exam = time.time()
 titre_avion = ""
 dernier_check_titre = 0.0
 effets_mission = EffetsMission()
+services_sol = ServicesSol()
 
 try:
     while True:
@@ -601,6 +700,11 @@ try:
                     effets_mission.mettre_a_jour()
                 except Exception:
                     effets_mission.reinitialiser()
+                # Services au sol (vehicule + passagers) au depart de la mission
+                try:
+                    services_sol.maj(lat, lon, sim_on_ground == 1, float(extra.get('ground_speed', speed) or 0))
+                except Exception:
+                    pass
 
             # =========================================================
             # ⚖️ LE JUGE DE PAIX : DÉTECTION DU TOUCHDOWN
