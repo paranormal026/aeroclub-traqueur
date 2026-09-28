@@ -23,7 +23,7 @@ if getattr(sys, 'frozen', False) and hasattr(os, 'add_dll_directory'):
         pass
 
 BASE_URL = "https://aeroclubmanager.fr/msfs"
-VERSION_ACTUELLE = 10
+VERSION_ACTUELLE = 11
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])), 'config.json')
 
 
@@ -442,6 +442,82 @@ try:
     installer_effets_mission()
 except Exception as e:
     print(f"⚠️ Installation des effets de mission impossible ({e}). Le traqueur fonctionne normalement.")
+
+
+NOM_PAQUET_PERSOS = "aeroclubmanager-persos"
+
+
+def installer_personnages():
+    """Installe (ou met a jour) le paquet des personnages et vehicules AeroClubManager (passagers, parachutistes,
+    mecano, navette, camion-citerne, voiles...). Pres de 100 Mo : telecharge dans un fichier temporaire, et
+    seulement quand MSFS est ferme (ses fichiers sont verrouilles pendant le jeu)."""
+    if not getattr(sys, 'frozen', False):
+        return
+    import shutil
+    import tempfile
+    import zipfile
+
+    cfg = charger_config()
+    dossiers = [d for d in cfg.get('dossiers_msfs', []) if os.path.isdir(d)] or detecter_dossiers_msfs()
+    communautes = [c for c in (dossier_community(d) for d in dossiers) if c]
+    if not communautes:
+        return
+    try:
+        version = requests.get(f"{BASE_URL}/api_efb.php", params={"action": "package_info", "name": "persos", "api_token": API_TOKEN}, timeout=10).json().get("version")
+    except Exception:
+        return
+    if not version:
+        return
+    installe = cfg.get('persos_installe', {})
+    a_faire = []
+    for c in communautes:
+        manifeste = os.path.join(c, NOM_PAQUET_PERSOS, "manifest.json")
+        try:
+            with open(manifeste, encoding="utf-8") as f:
+                deja = json.load(f).get("package_version")
+        except Exception:
+            deja = installe.get(c)
+        if deja != version:
+            a_faire.append(c)
+    if not a_faire:
+        return
+    if msfs_ouvert():
+        print(f"🧍 Une nouvelle version des personnages AeroClubManager ({version}) est disponible : fermez MSFS puis relancez le traqueur pour l'installer.")
+        return
+    print(f"🧍 Téléchargement des personnages et véhicules AeroClubManager (version {version}, environ 100 Mo)...")
+    tmp = tempfile.mkdtemp(prefix="acm_persos_")
+    try:
+        chemin_zip = os.path.join(tmp, "persos.zip")
+        with requests.get(f"{BASE_URL}/api_efb.php", params={"action": "package", "name": "persos", "api_token": API_TOKEN}, timeout=120, stream=True) as r:
+            r.raise_for_status()
+            total = int(r.headers.get("Content-Length") or 0); recu = 0; palier = 0
+            with open(chemin_zip, "wb") as f:
+                for bloc in r.iter_content(chunk_size=1 << 20):
+                    f.write(bloc); recu += len(bloc)
+                    if total and recu * 10 // total > palier:
+                        palier = recu * 10 // total
+                        print(f"   ... {palier * 10} %")
+        with zipfile.ZipFile(chemin_zip) as z:
+            z.extractall(tmp)
+        source = os.path.join(tmp, NOM_PAQUET_PERSOS)
+        for communaute in a_faire:
+            cible = os.path.join(communaute, NOM_PAQUET_PERSOS)
+            if os.path.isdir(cible):
+                shutil.rmtree(cible)
+            shutil.copytree(source, cible)
+            regenerer_layout(cible)
+            installe[communaute] = version
+            print(f"✅ Personnages et véhicules installés dans {cible} (visibles au prochain démarrage de MSFS).")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    cfg['persos_installe'] = installe
+    sauver_config(cfg)
+
+
+try:
+    installer_personnages()
+except Exception as e:
+    print(f"⚠️ Installation des personnages impossible ({e}). Le traqueur fonctionne normalement.")
 
 
 DOSSIER_SOL = os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])), 'services_sol')
