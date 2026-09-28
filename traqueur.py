@@ -23,7 +23,7 @@ if getattr(sys, 'frozen', False) and hasattr(os, 'add_dll_directory'):
         pass
 
 BASE_URL = "https://aeroclubmanager.fr/msfs"
-VERSION_ACTUELLE = 9
+VERSION_ACTUELLE = 10
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])), 'config.json')
 
 
@@ -114,6 +114,7 @@ def charger_token():
     print("🔑 Première configuration du Traqueur AeroClubManager")
     print("Récupère ta clé API sur ton profil :")
     print("https://aeroclubmanager.fr/msfs/profil.php")
+    print("Astuce : le bouton « Télécharger mon traqueur » du profil donne un traqueur avec la clé déjà incluse.")
     print("=" * 60)
     token = input("Colle ta clé API ici puis appuie sur Entrée : ").strip()
     cfg['api_token'] = token
@@ -304,6 +305,15 @@ def regenerer_layout(racine):
         json.dump({"content": contenu}, f, indent=2)
 
 
+def msfs_ouvert():
+    try:
+        import subprocess
+        sortie = subprocess.run(["tasklist", "/FI", "IMAGENAME eq FlightSimulator2024.exe"], capture_output=True, text=True, creationflags=0x08000000).stdout
+        return "FlightSimulator2024" in sortie
+    except Exception:
+        return False
+
+
 def installer_app_efb():
     if not getattr(sys, 'frozen', False):
         return
@@ -317,6 +327,24 @@ def installer_app_efb():
     communautes = [c for c in (dossier_community(d) for d in dossiers) if c]
     if not communautes:
         return
+    # La cle de la tablette suit celle du traqueur (compte recree, cle regeneree) : corrigee a chaque demarrage
+    for communaute in communautes:
+        app = os.path.join(communaute, NOM_PAQUET_EFB, *DOSSIER_APP_EFB)
+        if not os.path.isdir(app):
+            continue
+        fichier = os.path.join(app, "config.json")
+        try:
+            with open(fichier, encoding="utf-8") as f:
+                ancienne = (json.load(f).get("api_token") or "").strip()
+        except Exception:
+            ancienne = ""
+        if ancienne != API_TOKEN:
+            with open(fichier, "w", encoding="utf-8") as f:
+                json.dump({"api_token": API_TOKEN}, f)
+            regenerer_layout(os.path.join(communaute, NOM_PAQUET_EFB))
+            print("🔑 Clé API de la tablette EFB mise à jour.")
+            if msfs_ouvert():
+                print("⚠️ MSFS est déjà lancé : redémarrez-le pour que la tablette prenne la nouvelle clé.")
     try:
         version = requests.get(f"{BASE_URL}/api_efb.php", params={"action": "package_info", "api_token": API_TOKEN}, timeout=10).json().get("version")
     except Exception:
