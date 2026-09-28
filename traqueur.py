@@ -23,7 +23,7 @@ if getattr(sys, 'frozen', False) and hasattr(os, 'add_dll_directory'):
         pass
 
 BASE_URL = "https://aeroclubmanager.fr/msfs"
-VERSION_ACTUELLE = 11
+VERSION_ACTUELLE = 12
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])), 'config.json')
 
 
@@ -838,6 +838,8 @@ last_lat = None
 last_lon = None
 etat_precedent_sol = 1
 derniere_vitesse_verticale = 0.0
+derniere_agl = 0.0           # hauteur sol du dernier paquet complet
+derniere_pos = None          # position du dernier paquet complet (detection du retour au parking)
 exam_status = get_exam_status()
 dernier_check_exam = time.time()
 titre_avion = ""
@@ -867,15 +869,22 @@ try:
                     pass
 
             try:
-                lat = aq.get("PLANE_LATITUDE") or 0.0
-                lon = aq.get("PLANE_LONGITUDE") or 0.0
-                alt = aq.get("PLANE_ALTITUDE") or 0.0
-                agl = aq.get("PLANE_ALT_ABOVE_GROUND") or 0.0
+                lat_b = aq.get("PLANE_LATITUDE")
+                lon_b = aq.get("PLANE_LONGITUDE")
+                alt_b = aq.get("PLANE_ALTITUDE")
+                agl_b = aq.get("PLANE_ALT_ABOVE_GROUND")
+                lat = lat_b or 0.0
+                lon = lon_b or 0.0
+                alt = alt_b or 0.0
+                agl = agl_b or 0.0
                 speed = aq.get("AIRSPEED_INDICATED") or 0.0
                 vertical_speed = aq.get("VERTICAL_SPEED") or 0.0
                 # Attention : "x or 1" transformerait un 0 legitime (en vol / moteur coupe) en 1
                 sog = aq.get("SIM_ON_GROUND")
-                sim_on_ground = int(sog) if sog is not None else 1
+                # Le simulateur renvoie parfois des valeurs vides (None) pendant quelques secondes : un tel paquet ne compte
+                # ni comme un atterrissage ni comme une position (il n'est pas envoye au site)
+                paquet_incomplet = None in (lat_b, lon_b, alt_b, agl_b, sog)
+                sim_on_ground = int(sog) if sog is not None else etat_precedent_sol
                 eng = aq.get("GENERAL_ENG_COMBUSTION:1")
                 engine_on = int(eng) if eng is not None else 1
                 g_force = aq.get("G_FORCE") or 1.0
@@ -913,7 +922,7 @@ try:
                 pass
 
             # Feux et fumigenes de la mission en cours (pas de lat/lon valide dans les menus du jeu)
-            if abs(lat) > 0.01:
+            if abs(lat) > 0.01 and not paquet_incomplet:
                 try:
                     effets_mission.mettre_a_jour()
                 except Exception:
@@ -932,7 +941,13 @@ try:
             # =========================================================
             # ⚖️ LE JUGE DE PAIX : DÉTECTION DU TOUCHDOWN
             # =========================================================
-            if etat_precedent_sol == 0 and sim_on_ground == 1:
+            # Retour au parking / nouveau vol : l'avion "saute" de plusieurs km, ce n'est pas un atterrissage
+            teleporte = derniere_pos is not None and calculer_distance_km(derniere_pos[0], derniere_pos[1], lat, lon) > 3
+            if paquet_incomplet:
+                sim_on_ground = etat_precedent_sol
+            elif etat_precedent_sol == 0 and sim_on_ground == 1 and (teleporte or derniere_agl > 300):
+                print("ℹ️ Avion replacé au sol (retour au parking ou nouveau vol) : ce n'est pas un atterrissage, rien n'est compté.")
+            elif etat_precedent_sol == 0 and sim_on_ground == 1:
                 fpm = int(derniere_vitesse_verticale)
                 print(f"\n🛬 TOUCHDOWN DÉTECTÉ ! Impact à {fpm} FPM")
 
@@ -945,7 +960,11 @@ try:
                     print(f"❌ Erreur de communication avec le serveur web : {e}")
 
             etat_precedent_sol = sim_on_ground
-            derniere_vitesse_verticale = vertical_speed
+            if not paquet_incomplet:
+                derniere_vitesse_verticale = vertical_speed
+                derniere_agl = agl
+                if abs(lat) > 0.01:
+                    derniere_pos = (lat, lon)
             # =========================================================
 
             on_ground = sim_on_ground
@@ -981,7 +1000,7 @@ try:
             }
             status_data.update(extra)
 
-            reponse_serveur = envoyer_telemetrie_live(status_data)
+            reponse_serveur = None if paquet_incomplet else envoyer_telemetrie_live(status_data)
             pannes_reelles.appliquer(sim, (reponse_serveur or {}).get('pannes'))
             # Demandes du pilote et evenements (camion-citerne, mecano, saut...) : deposes pour AcmPilotage, qui les lit
             # toutes les demi-secondes (reponse en 1 a 2 s au lieu d'attendre qu'il interroge lui-meme le site)
