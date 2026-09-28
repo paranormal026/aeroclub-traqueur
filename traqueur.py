@@ -983,6 +983,17 @@ try:
 
             reponse_serveur = envoyer_telemetrie_live(status_data)
             pannes_reelles.appliquer(sim, (reponse_serveur or {}).get('pannes'))
+            # Demandes du pilote et evenements (camion-citerne, mecano, saut...) : deposes pour AcmPilotage, qui les lit
+            # toutes les demi-secondes (reponse en 1 a 2 s au lieu d'attendre qu'il interroge lui-meme le site)
+            ambiance = (reponse_serveur or {}).get('ambiance')
+            if ambiance is not None and os.path.isdir(DOSSIER_SOL):
+                try:
+                    tmp_ordres = os.path.join(DOSSIER_SOL, 'ordres.json.tmp')
+                    with open(tmp_ordres, 'w', encoding='utf-8') as f:
+                        json.dump(ambiance, f)
+                    os.replace(tmp_ordres, os.path.join(DOSSIER_SOL, 'ordres.json'))
+                except Exception:
+                    pass
 
             json_path = os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])), 'live_status.json')
             with open(json_path, 'w', encoding='utf-8') as f:
