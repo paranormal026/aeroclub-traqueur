@@ -23,7 +23,7 @@ if getattr(sys, 'frozen', False) and hasattr(os, 'add_dll_directory'):
         pass
 
 BASE_URL = "https://aeroclubmanager.fr/msfs"
-VERSION_ACTUELLE = 12
+VERSION_ACTUELLE = 13
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])), 'config.json')
 
 
@@ -825,6 +825,52 @@ def envoyer_telemetrie_live(status_data):
         return {}  # une perte de connexion ponctuelle ne doit pas interrompre le vol
 
 
+# v13 : donnees de configuration pour l'analyse des vols (FDM) et le carnet de vol pro. Lecture rapide (chaque seconde) :
+# volets, train, alarmes, altitude indiquee ; lente (toutes les 3 s) : feux, transpondeur, frein de parc, carburant, heure du
+# simulateur. Une valeur que le simulateur ne donne pas n'est simplement pas envoyee (le site saute alors le controle).
+FDM_RAPIDE = (("flaps_pct", "TRAILING_EDGE_FLAPS_LEFT_PERCENT"), ("gear_pct", "GEAR_TOTAL_PCT_EXTENDED"),
+              ("flap_exc", "FLAP_SPEED_EXCEEDED"), ("ovspd", "OVERSPEED_WARNING"), ("stall", "STALL_WARNING"),
+              ("ind_alt", "INDICATED_ALTITUDE"))
+FDM_LENT = (("gear_retr", "IS_GEAR_RETRACTABLE"), ("lt_beacon", "LIGHT_BEACON"), ("lt_land", "LIGHT_LANDING"),
+            ("lt_strobe", "LIGHT_STROBE"), ("lt_nav", "LIGHT_NAV"), ("lt_taxi", "LIGHT_TAXI"),
+            ("brake_park", "BRAKE_PARKING_POSITION"), ("fuel_lbs", "FUEL_TOTAL_QUANTITY_WEIGHT"),
+            ("ap", "AUTOPILOT_MASTER"), ("zulu_s", "ZULU_TIME"))
+fdm_lent = {"t": 0.0, "valeurs": {}, "sim": None, "xpdr": None}
+
+
+def lire_fdm(aq, sim, extra):
+    for cle, simvar in FDM_RAPIDE:
+        try:
+            v = aq.get(simvar)
+            if v is not None:
+                extra[cle] = round(float(v), 3)
+        except Exception:
+            pass
+    if time.time() - fdm_lent["t"] >= 3:
+        fdm_lent["t"] = time.time()
+        vals = {}
+        for cle, simvar in FDM_LENT:
+            try:
+                v = aq.get(simvar)
+                if v is not None:
+                    vals[cle] = round(float(v), 3)
+            except Exception:
+                pass
+        # TRANSPONDER STATE (0 arret, 1 attente, 2 test, 3 marche, 4 ALT) n'est pas dans la liste de la bibliotheque : requete declaree ici
+        try:
+            if fdm_lent["sim"] is not sim:
+                from SimConnect.RequestList import Request
+                fdm_lent["xpdr"] = Request((b'TRANSPONDER STATE:1', b'Enum'), sim, _time=50)
+                fdm_lent["sim"] = sim
+            v = fdm_lent["xpdr"].value
+            if v is not None:
+                vals["xpdr"] = int(v)
+        except Exception:
+            pass
+        fdm_lent["valeurs"] = vals
+    extra.update(fdm_lent["valeurs"])
+
+
 print("=" * 60)
 print("⚖️ Traqueur MSFS & Juge de Paix Démarrés...")
 print("=" * 60)
@@ -918,6 +964,10 @@ try:
                     extra['bank_deg'] = round(math.degrees(b), 1)
                 if p is not None:
                     extra['pitch_deg'] = round(-math.degrees(p), 1)
+            except Exception:
+                pass
+            try:
+                lire_fdm(aq, sim, extra)
             except Exception:
                 pass
 
