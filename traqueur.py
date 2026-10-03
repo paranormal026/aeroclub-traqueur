@@ -3,6 +3,7 @@ import json
 import math
 import sys
 import os
+import re
 
 # --- PROTECTION DES IMPORTATIONS ---
 try:
@@ -23,7 +24,7 @@ if getattr(sys, 'frozen', False) and hasattr(os, 'add_dll_directory'):
         pass
 
 BASE_URL = "https://aeroclubmanager.fr/msfs"
-VERSION_ACTUELLE = 13
+VERSION_ACTUELLE = 14
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])), 'config.json')
 
 
@@ -834,7 +835,7 @@ FDM_RAPIDE = (("flaps_pct", "TRAILING_EDGE_FLAPS_LEFT_PERCENT"), ("gear_pct", "G
 FDM_LENT = (("gear_retr", "IS_GEAR_RETRACTABLE"), ("lt_beacon", "LIGHT_BEACON"), ("lt_land", "LIGHT_LANDING"),
             ("lt_strobe", "LIGHT_STROBE"), ("lt_nav", "LIGHT_NAV"), ("lt_taxi", "LIGHT_TAXI"),
             ("brake_park", "BRAKE_PARKING_POSITION"), ("fuel_lbs", "FUEL_TOTAL_QUANTITY_WEIGHT"),
-            ("ap", "AUTOPILOT_MASTER"), ("zulu_s", "ZULU_TIME"))
+            ("ap", "AUTOPILOT_MASTER"), ("zulu_s", "ZULU_TIME"), ("seatbelt", "CABIN_SEATBELTS_ALERT_SWITCH"))
 fdm_lent = {"t": 0.0, "valeurs": {}, "sim": None, "xpdr": None}
 
 
@@ -871,6 +872,55 @@ def lire_fdm(aq, sim, extra):
     extra.update(fdm_lent["valeurs"])
 
 
+# v14 : voix dynamiques du site (cles dyn_<pilote>_<empreinte>). AcmPilotage ne joue un ordre radio qu'une fois et ignore un
+# fichier absent : l'ordre ne lui est transmis qu'une fois le WAV telecharge (le site le repropose pendant 5 min).
+voix_echecs = {}
+
+
+def voix_dynamiques(ambiance):
+    ordres = ambiance.get('ordres') if isinstance(ambiance, dict) else None
+    if not isinstance(ordres, list):
+        return ambiance
+    dossier = os.path.join(DOSSIER_SOL, 'radio')
+    os.makedirs(dossier, exist_ok=True)
+    gardes, telecharges = [], 0
+    for o in ordres:
+        cle = str(o.get('nature', '')) if isinstance(o, dict) else ''
+        if not (isinstance(o, dict) and o.get('url') and re.match(r'^dyn_\d+_[a-f0-9]{12}$', cle)):
+            gardes.append(o)
+            continue
+        cible = os.path.join(dossier, cle + '.wav')
+        if not os.path.isfile(cible) and telecharges < 2 and time.time() >= voix_echecs.get(cle, 0):
+            telecharges += 1
+            try:
+                r = requests.get(f"{BASE_URL}/{o['url']}", params={'api_token': API_TOKEN}, timeout=8)
+                if r.ok and r.content[:4] == b'RIFF' and len(r.content) > 1000:
+                    with open(cible + '.tmp', 'wb') as f:
+                        f.write(r.content)
+                    os.replace(cible + '.tmp', cible)
+                else:
+                    voix_echecs[cle] = time.time() + 3
+            except Exception:
+                voix_echecs[cle] = time.time() + 5
+        if os.path.isfile(cible):
+            gardes.append(o)
+    ambiance = dict(ambiance)
+    ambiance['ordres'] = gardes
+    return ambiance
+
+
+def nettoyer_voix_dynamiques():
+    try:
+        dossier = os.path.join(DOSSIER_SOL, 'radio')
+        for nom in os.listdir(dossier):
+            chemin = os.path.join(dossier, nom)
+            if nom.startswith('dyn_') and time.time() - os.path.getmtime(chemin) > 2 * 86400:
+                os.remove(chemin)
+    except Exception:
+        pass
+
+
+nettoyer_voix_dynamiques()
 print("=" * 60)
 print("⚖️ Traqueur MSFS & Juge de Paix Démarrés...")
 print("=" * 60)
@@ -1056,6 +1106,10 @@ try:
             # toutes les demi-secondes (reponse en 1 a 2 s au lieu d'attendre qu'il interroge lui-meme le site)
             ambiance = (reponse_serveur or {}).get('ambiance')
             if ambiance is not None and os.path.isdir(DOSSIER_SOL):
+                try:
+                    ambiance = voix_dynamiques(ambiance)
+                except Exception:
+                    pass
                 try:
                     tmp_ordres = os.path.join(DOSSIER_SOL, 'ordres.json.tmp')
                     with open(tmp_ordres, 'w', encoding='utf-8') as f:
