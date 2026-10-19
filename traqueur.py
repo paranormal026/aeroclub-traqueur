@@ -24,7 +24,7 @@ if getattr(sys, 'frozen', False) and hasattr(os, 'add_dll_directory'):
         pass
 
 BASE_URL = "https://aeroclubmanager.fr/msfs"
-VERSION_ACTUELLE = 15
+VERSION_ACTUELLE = 16
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])), 'config.json')
 
 
@@ -877,6 +877,93 @@ def calculer_distance_km(lat1, lon1, lat2, lon2):
     return R * c
 
 
+# --- POSITIONS FICTIVES ET COMPTEUR DE DISTANCE DU VOL (v16) ---
+def position_fantome(lat, lon, au_sol, ias, gs=None, moteur=True, agl=0.0, cap_rad=None):
+    """True si la position est une position fictive du simulateur (menus, chargement, pause), memes regles que api_tracker.php :
+    paquet vide 0 / 0, position 0 / 90 (ocean Indien), Boeing Field (KBFI) cap 120 a l'arret, avion « en l'air » a l'arret
+    tres haut ou moteur coupe."""
+    if abs(lat) <= 0.01 and abs(lon) <= 0.01:
+        return True
+    if abs(lat) <= 0.001 and abs(lon - 90) <= 0.001:
+        return True
+    gs_kbfi = ias if gs is None else gs
+    if abs(lat - 47.518932) < 0.0005 and abs(lon + 122.294505) < 0.0005 and gs_kbfi < 1:
+        if cap_rad is None or abs((math.degrees(cap_rad) + 360) % 360 - 120) < 2:
+            return True
+    gs_air = 0.0 if gs is None else gs
+    if not au_sol and gs_air < 3 and ias < 5 and (agl > 3000 or not moteur):
+        return True
+    return False
+
+
+class CompteurDistance:
+    """Distance parcourue en vol (NM) pour le vol en cours. Ne compte que les paquets complets et les positions reelles ;
+    refuse les sauts impossibles (plus de 3 NM a plus de 700 kt : teleportation, deplacement manuel) comme acm_trk_saut du
+    serveur ; repart de zero a chaque nouveau vol : decollage apres au moins 2 min au sol, retour au parking ou vol charge
+    depuis le menu (saut), autre appareil."""
+    SAUT_NM = 3.0
+    VITESSE_MAX_KT = 700.0
+    SOL_MIN_S = 120
+
+    def __init__(self):
+        self.total_nm = 0.0
+        self.dernier = None        # (lat, lon, t) de la derniere position valide
+        self.sol_depuis = None     # debut de l'arret au sol en cours
+        self.fantome_vu = False    # position fictive vue depuis la derniere position valide (menu / chargement)
+        self.titre = ""
+        self.sauts = 0
+        self.remises_a_zero = 0
+
+    def nouveau_vol(self):
+        self.total_nm = 0.0
+        self.remises_a_zero += 1
+
+    def maj(self, t, lat, lon, au_sol, ias, gs=None, moteur=True, agl=0.0, cap_rad=None, incomplet=False, titre=""):
+        if incomplet or lat is None or lon is None:
+            return self.total_nm
+        lat, lon, ias = float(lat), float(lon), float(ias or 0.0)
+        gs = None if gs is None else float(gs)
+        agl = float(agl or 0.0)
+        if titre:
+            if self.titre and titre != self.titre:
+                # autre appareil charge : nouveau vol, la prochaine position sert de depart
+                self.nouveau_vol()
+                self.dernier = None
+                self.sol_depuis = None
+            self.titre = titre
+        if position_fantome(lat, lon, au_sol, ias, gs, moteur, agl, cap_rad):
+            self.fantome_vu = True
+            return self.total_nm
+        fantome_vu, self.fantome_vu = self.fantome_vu, False
+        if self.dernier is None:
+            self.dernier = (lat, lon, t)
+            if au_sol and self.sol_depuis is None:
+                self.sol_depuis = t
+            return self.total_nm
+        la, lo, t0 = self.dernier
+        nm = calculer_distance_km(la, lo, lat, lon) * 0.539957
+        dt = max(1.0, t - t0)
+        self.dernier = (lat, lon, t)
+        if nm > self.SAUT_NM and (nm / (dt / 3600.0) > self.VITESSE_MAX_KT or fantome_vu):
+            # saut : rien n'est compte, la position repart d'ici. Pose au sol ou apres le menu = nouveau vol ;
+            # deplacement manuel en vol = le vol continue sans ce trajet
+            self.sauts += 1
+            if au_sol or fantome_vu:
+                self.nouveau_vol()
+            self.sol_depuis = t if au_sol else None
+            return self.total_nm
+        if au_sol:
+            if self.sol_depuis is None:
+                self.sol_depuis = t
+        else:
+            if self.sol_depuis is not None and t - self.sol_depuis >= self.SOL_MIN_S:
+                self.nouveau_vol()  # decollage apres au moins 2 min au sol : nouveau vol
+            self.sol_depuis = None
+            if ias > 40:
+                self.total_nm += nm
+        return self.total_nm
+
+
 def get_exam_status():
     """Récupère le statut d'examen DGAC + points VAC via l'API distante (remplace l'ancien accès direct à la BDD)."""
     try:
@@ -1005,8 +1092,7 @@ sim, aq = connecter_simconnect()
 # --- VARIABLES GLOBALES DE SUIVI ---
 points_valides = set()
 total_distance_nm = 0.0
-last_lat = None
-last_lon = None
+compteur_distance = CompteurDistance()
 etat_precedent_sol = 1
 derniere_vitesse_verticale = 0.0
 derniere_agl = 0.0           # hauteur sol du dernier paquet complet
@@ -1144,9 +1230,16 @@ try:
 
             on_ground = sim_on_ground
 
+            # Position fictive du simulateur (menus, chargement) ou paquet incomplet : ni point VAC ni distance
+            try:
+                position_fictive = paquet_incomplet or position_fantome(lat, lon, on_ground == 1, speed, extra.get('ground_speed'),
+                                                                        engine_on != 0, agl, extra.get('heading_rad'))
+            except Exception:
+                position_fictive = paquet_incomplet
+
             # Validation des points VAC (si examen actif)
             message_vac = None
-            if exam_status.get('exam_active') == 1 and exam_status.get('vac_points'):
+            if exam_status.get('exam_active') == 1 and exam_status.get('vac_points') and not position_fictive:
                 for nom_point, donnees in exam_status['vac_points'].items():
                     if nom_point in points_valides:
                         continue
@@ -1156,13 +1249,13 @@ try:
                         message_vac = f"✅ Point {nom_point} validé !"
                         break
 
-            # Calcul de distance
-            if on_ground == 0 and speed > 40:
-                if last_lat is not None and last_lon is not None:
-                    dist_step_km = calculer_distance_km(last_lat, last_lon, lat, lon)
-                    total_distance_nm += dist_step_km * 0.539957
-            last_lat = lat
-            last_lon = lon
+            # Calcul de distance (v16) : paquets incomplets, positions fictives et sauts ignores, remise a zero a chaque nouveau vol
+            try:
+                total_distance_nm = compteur_distance.maj(time.time(), lat, lon, on_ground == 1, speed, gs=extra.get('ground_speed'),
+                                                          moteur=engine_on != 0, agl=agl, cap_rad=extra.get('heading_rad'),
+                                                          incomplet=paquet_incomplet, titre=titre_avion)
+            except Exception:
+                pass
 
             # Statut complet (envoye au serveur en direct + garde une copie locale)
             status_data = {
