@@ -52,7 +52,8 @@ while ((Get-Date) -lt $fin) {
   if (Test-Path $journal) { try { $ev = Get-Content $journal -Raw | ConvertFrom-Json } catch {} }
   if (@($ev | Where-Object { $_.action -eq "contact" -and $_.etape -eq "pret" }).Count -ge 1) { break }
 }
-Stop-Process -Id $t.Id -Force -ErrorAction SilentlyContinue
+# traqueur.exe (PyInstaller) = 2 processus : le lanceur ET le programme. On ferme les deux, comme la croix de la fenetre.
+Get-Process traqueur -ErrorAction SilentlyContinue | Stop-Process -Force
 Start-Sleep 2
 Get-Content "$travail\traqueur.txt" -ErrorAction SilentlyContinue | Select-Object -First 40 | ForEach-Object { Write-Host "      | $_" }
 $ech = @($ev | Where-Object { $_.action -eq "echanger" })
@@ -79,7 +80,8 @@ $cfg | Add-Member -Force persos_installe @{ $comm = "1.65.0" }
 $cfg | ConvertTo-Json -Depth 5 | Set-Content "$app\config.json" -Encoding utf8
 New-Item -ItemType Directory -Force "$app\services_sol\radio" | Out-Null; "x" | Set-Content "$app\services_sol\AcmSol.exe"
 "{}" | Set-Content "$app\live_status.json"
-$u = Start-Process -PassThru -Wait -FilePath "$app\unins000.exe" -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"
+Verif (@(Get-Process traqueur -ErrorAction SilentlyContinue).Count -eq 0) "aucun traqueur ouvert avant la desinstallation"
+$u = Start-Process -PassThru -Wait -FilePath "$app\unins000.exe" -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/LOG=`"$travail\desinstallation.log`""
 $fin = (Get-Date).AddSeconds(60)
 while ((Test-Path $app) -and (Get-Date) -lt $fin) { Start-Sleep 1 }
 Verif (-not (Test-Path $app)) "dossier AeroClubManager supprime"
