@@ -23,9 +23,26 @@ if getattr(sys, 'frozen', False) and hasattr(os, 'add_dll_directory'):
     except Exception:
         pass
 
+# Console redirigee (journal, tests) : un emoji impossible a encoder ne doit jamais arreter le traqueur
+for _flux in (sys.stdout, sys.stderr):
+    try:
+        _flux.reconfigure(errors='replace')
+    except Exception:
+        pass
+
+import acm_installation
+
+# Desinstallation (lancee par le desinstalleur) : nettoie les paquets ACM et le exe.xml puis quitte, avant tout le reste
+acm_installation.executer_desinstallation_si_demandee()
+
 BASE_URL = "https://aeroclubmanager.fr/msfs"
+# Tests automatiques uniquement (GitHub Actions) : faux site local sur 127.0.0.1, jamais une autre adresse
+if re.match(r"^http://127\.0\.0\.1:\d+$", os.environ.get("ACM_TRAQUEUR_URL_TEST", "")):
+    BASE_URL = os.environ["ACM_TRAQUEUR_URL_TEST"]
 VERSION_ACTUELLE = 16
-CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])), 'config.json')
+DOSSIER_TRAQUEUR = os.path.dirname(os.path.abspath(sys.argv[0]))
+CONFIG_PATH = os.path.join(DOSSIER_TRAQUEUR, 'config.json')
+PAGE_INSTALLATION = "https://aeroclubmanager.fr/msfs/installer.php"
 
 
 def verifier_mise_a_jour():
@@ -108,18 +125,24 @@ def sauver_config(cfg):
 
 
 def charger_token():
+    """Cle du pilote : config.json, sinon code de liaison laisse par l'installateur, sinon fenetre de secours
+    ou il recopie le code a 6 caracteres affiche sur le site (une ancienne cle API complete est aussi acceptee)."""
     cfg = charger_config()
-    if cfg.get('api_token'):
+    if cfg.get('api_token') and not acm_installation.lire_fichier_appairage(DOSSIER_TRAQUEUR):
         return cfg['api_token']
     print("=" * 60)
-    print("🔑 Première configuration du Traqueur AeroClubManager")
-    print("Récupère ta clé API sur ton profil :")
-    print("https://aeroclubmanager.fr/msfs/profil.php")
-    print("Astuce : le bouton « Télécharger mon traqueur » du profil donne un traqueur avec la clé déjà incluse.")
+    print("🔑 Liaison du traqueur AeroClubManager avec votre compte...")
     print("=" * 60)
-    token = input("Colle ta clé API ici puis appuie sur Entrée : ").strip()
-    cfg['api_token'] = token
-    sauver_config(cfg)
+    token = acm_installation.obtenir_cle(requests, BASE_URL, DOSSIER_TRAQUEUR, VERSION_ACTUELLE,
+                                         charger_config, sauver_config, adresse_page=PAGE_INSTALLATION)
+    if not token:
+        print("\nℹ️ Le traqueur n'est pas encore relié à votre compte.")
+        print(f"   Ouvrez {PAGE_INSTALLATION} : votre code de liaison y est affiché, puis relancez le traqueur.")
+        try:
+            input("Appuyez sur Entrée pour fermer...")
+        except Exception:
+            pass
+        sys.exit()
     return token
 
 
@@ -141,6 +164,11 @@ if verifier_token(API_TOKEN) is False:
     _cfg.pop('api_token', None)
     sauver_config(_cfg)
     API_TOKEN = charger_token()
+
+# Premier contact : la page « Installer AeroClubManager » du site passe au vert
+MSFS_TROUVES = acm_installation.detecter_msfs()
+acm_installation.envoyer_contact(requests, BASE_URL, API_TOKEN, VERSION_ACTUELLE, "demarrage",
+                                 [n for n, _d in MSFS_TROUVES], False)
 
 
 # =========================================================
@@ -633,6 +661,25 @@ try:
     installer_services_sol()
 except Exception as e:
     print(f"⚠️ Installation des services au sol impossible ({e}). Le traqueur fonctionne normalement.")
+
+
+def signaler_installation_terminee():
+    """Second contact, une fois les paquets installes : la page du site affiche ce qui est en place."""
+    cfg = charger_config()
+    dossiers = [d for d in cfg.get('dossiers_msfs', []) if os.path.isdir(d)] or detecter_dossiers_msfs()
+    communautes = [c for c in (dossier_community(d) for d in dossiers) if c]
+    paquets = {}
+    for cle, nom in acm_installation.PAQUETS_TRAQUEUR.items():
+        paquets[nom] = any(os.path.isdir(os.path.join(c, nom)) for c in communautes)
+    paquets['services_sol'] = os.path.isfile(os.path.join(DOSSIER_SOL, 'AcmSol.exe'))
+    acm_installation.envoyer_contact(requests, BASE_URL, API_TOKEN, VERSION_ACTUELLE, "pret",
+                                     [n for n, _d in acm_installation.detecter_msfs()], bool(communautes), paquets)
+
+
+try:
+    signaler_installation_terminee()
+except Exception:
+    pass
 
 
 class ServicesSol:

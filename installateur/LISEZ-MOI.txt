@@ -1,0 +1,14 @@
+﻿Traqueur AeroClubManager
+========================
+
+Le traqueur relie Microsoft Flight Simulator 2024 à votre compte AeroClubManager.
+
+- Il se lance tout seul avec le simulateur (vous pouvez aussi l'ouvrir avec le raccourci « AeroClubManager Traqueur »).
+- Au premier lancement, il se relie à votre compte et installe la tablette, les personnages,
+  les effets et les avions AeroClubManager dans le simulateur. Gardez sa fenêtre ouverte pendant le vol.
+- Le fichier config.json de ce dossier contient votre clé personnelle : ne le partagez pas.
+
+Désinstaller : menu Démarrer > AeroClubManager > Désinstaller AeroClubManager
+(ou Paramètres Windows > Applications). Seuls les éléments AeroClubManager installés par ce traqueur sont retirés.
+
+Aide : https://aeroclubmanager.fr/msfs/installer.php

@@ -1,0 +1,99 @@
+name: Installateur AeroClubManager
+
+# Construit traqueur.exe + AeroClubManager-Installation.exe, puis les teste sur une machine jetable :
+# tests du module d'installation, installation silencieuse avec code dans le nom, liaison avec un faux site local,
+# desinstallation (seuls les elements AeroClubManager installes par le traqueur sont retires), captures de l'assistant.
+on:
+  workflow_dispatch:
+  push:
+    branches: [installateur]
+
+jobs:
+  installateur:
+    runs-on: windows-latest
+    env:
+      # Signature numerique : rien a changer le jour ou un certificat existe, il suffit de creer ces deux secrets
+      ACM_CERT_PFX: ${{ secrets.ACM_CERT_PFX_BASE64 }}
+      ACM_CERT_MDP: ${{ secrets.ACM_CERT_MDP }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Dependances
+        run: pip install pyinstaller requests SimConnect
+
+      - name: SimConnect.dll du SDK MSFS 2024
+        shell: pwsh
+        run: |
+          $pkgDir = python -c "import SimConnect, os; print(os.path.dirname(SimConnect.__file__))"
+          Copy-Item "SimConnect.dll" "$pkgDir\SimConnect.dll" -Force
+
+      - name: Tests du module d'installation
+        run: python tests/test_installation.py
+
+      - name: Compilation de traqueur.py (verification de syntaxe)
+        run: python -m py_compile traqueur.py acm_installation.py
+
+      - name: Construction de traqueur.exe
+        run: pyinstaller --onefile --name traqueur --icon installateur/acm.ico --add-binary "SimConnect.dll;SimConnect" traqueur.py
+
+      - name: Certificat (seulement si configure)
+        if: env.ACM_CERT_PFX != ''
+        shell: pwsh
+        run: |
+          [IO.File]::WriteAllBytes("$env:RUNNER_TEMP\acm.pfx", [Convert]::FromBase64String($env:ACM_CERT_PFX))
+          $st = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin\*\x64\signtool.exe" | Sort-Object FullName | Select-Object -Last 1
+          "SIGNTOOL=$($st.FullName)" >> $env:GITHUB_ENV
+          & $st.FullName sign /f "$env:RUNNER_TEMP\acm.pfx" /p $env:ACM_CERT_MDP /fd sha256 /tr http://timestamp.digicert.com /td sha256 dist\traqueur.exe
+
+      - name: Inno Setup
+        shell: pwsh
+        run: |
+          $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress }
+          & $iscc /? | Select-Object -First 2
+
+      - name: Construction de l'installateur
+        shell: pwsh
+        run: |
+          $v = (Select-String -Path traqueur.py -Pattern '^VERSION_ACTUELLE = (\d+)').Matches[0].Groups[1].Value
+          $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          $opts = @("/DVersionTraqueur=$v")
+          if ($env:ACM_CERT_PFX) {
+            $opts += "/DSigner"
+            $opts += "/Sacmsign=`"$env:SIGNTOOL`" sign /f `"$env:RUNNER_TEMP\acm.pfx`" /p $env:ACM_CERT_MDP /fd sha256 /tr http://timestamp.digicert.com /td sha256 `$f"
+          }
+          & $iscc @opts installateur\AeroClubManager.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Get-ChildItem sortie, dist | Select-Object FullName, Length
+          Get-FileHash sortie\AeroClubManager-Installation.exe, dist\traqueur.exe -Algorithm SHA256
+
+      - name: Test de bout en bout (installation, liaison, desinstallation)
+        shell: pwsh
+        run: ./tests/integration.ps1 -Installateur "$PWD\sortie\AeroClubManager-Installation.exe"
+
+      - name: Captures de l'assistant
+        if: always()
+        continue-on-error: true
+        shell: powershell
+        run: ./tests/captures_assistant.ps1 -Installateur "$PWD\sortie\AeroClubManager-Installation.exe" -Sortie "$PWD\captures"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: installateur-exe
+          path: |
+            sortie/AeroClubManager-Installation.exe
+            dist/traqueur.exe
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: captures-et-journaux
+          path: |
+            captures/
+            ${{ runner.temp }}/acm_integration/*.log
+            ${{ runner.temp }}/acm_integration/*.txt
+            ${{ runner.temp }}/acm_integration/*.json
