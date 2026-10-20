@@ -113,6 +113,10 @@ def demander_code_fenetre(message_erreur=None, adresse_page=""):
     except Exception:
         return _demander_code_console(message_erreur, adresse_page)
     fen.title("AeroClubManager — relier le traqueur à votre compte")
+    try:  # notre icone (installee a cote du traqueur), pas celle par defaut
+        fen.iconbitmap(os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])), "acm.ico"))
+    except Exception:
+        pass
     fen.attributes("-topmost", True)
     fen.resizable(False, False)
     cadre = ttk.Frame(fen, padding=18)
