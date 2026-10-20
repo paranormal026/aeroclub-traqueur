@@ -38,6 +38,14 @@ EMPLACEMENTS_MSFS = [
 ]
 
 
+def _dire(texte):
+    """print qui ne plante jamais sur une console sans emoji (journal redirige, tests)."""
+    try:
+        print(texte)
+    except UnicodeEncodeError:
+        print(str(texte).encode("ascii", "replace").decode("ascii"))
+
+
 # ------------------------------------------------------------------ code d'appairage
 def normaliser_code(texte):
     """'k7p-2qx ' -> 'K7P2QX' ; None si ce n'est pas un code valable."""
@@ -137,10 +145,10 @@ def demander_code_fenetre(message_erreur=None, adresse_page=""):
 def _demander_code_console(message_erreur, adresse_page):
     try:
         if message_erreur:
-            print("❌ " + message_erreur)
-        print("Recopiez le code à 6 caractères affiché sur la page « Installer AeroClubManager » du site.")
+            _dire("❌ " + message_erreur)
+        _dire("Recopiez le code à 6 caractères affiché sur la page « Installer AeroClubManager » du site.")
         if adresse_page:
-            print(adresse_page)
+            _dire(adresse_page)
         return input("Code de liaison : ").strip() or None
     except Exception:
         return None
@@ -161,7 +169,7 @@ def obtenir_cle(requests_mod, base_url, dossier_app, version, charger_config, sa
         if cle:
             cfg["api_token"] = cle
             sauver_config(cfg)
-            print("🔗 Traqueur relié à votre compte AeroClubManager.")
+            _dire("🔗 Traqueur relié à votre compte AeroClubManager.")
             return cle
     if cfg.get("api_token"):
         return cfg["api_token"]
@@ -183,7 +191,7 @@ def obtenir_cle(requests_mod, base_url, dossier_app, version, charger_config, sa
         cfg = charger_config()
         cfg["api_token"] = cle
         sauver_config(cfg)
-        print("🔗 Traqueur relié à votre compte AeroClubManager.")
+        _dire("🔗 Traqueur relié à votre compte AeroClubManager.")
         return cle
     return None
 
@@ -271,7 +279,7 @@ def retirer_de_exe_xml(dossier_msfs, chemin_exe, nom_addon="AeroClubManager Traq
     return True
 
 
-def desinstaller(dossier_app, chemin_exe, journal=print):
+def desinstaller(dossier_app, chemin_exe, journal=_dire):
     """Appele par le desinstalleur (traqueur.exe --desinstaller) AVANT la suppression des fichiers du traqueur."""
     cfg = {}
     try:
@@ -320,7 +328,7 @@ def executer_desinstallation_si_demandee():
     except Exception as e:
         lignes.append(f"Erreur : {e}")
     try:
-        print("\n".join(lignes))
+        _dire("\n".join(lignes))
     except Exception:
         pass
     sys.exit(0)
