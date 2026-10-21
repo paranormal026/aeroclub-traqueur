@@ -1,24 +1,34 @@
 # -*- coding: utf-8 -*-
-"""Veilleur AeroClubManager (v18, 21/10/2026, demande du proprietaire : « si le pilote ouvre MSFS 2024 et que le traqueur
-ne s'est pas lance, une petite voix dit : Votre traqueur n'est pas lance »).
+"""Veilleur AeroClubManager (v18 du 21/10/2026, delais corriges en v19 le meme jour). Demande du proprietaire : « si le pilote
+ouvre MSFS 2024 et que le traqueur ne s'est pas lance, une petite voix dit : Votre traqueur n'est pas lance ».
 
-Petit programme separe (acm_veilleur.exe, sans console, bibliotheque standard seulement) lance a l'ouverture de session
-Windows (valeur « AeroClubManager Veilleur » de HKCU\\...\\Run, sans droit administrateur). Toutes les 10 s il regarde si
-le simulateur tourne (FlightSimulator2024.exe, ou FlightSimulator.exe pour MSFS 2020). Si le simulateur tourne depuis 45 s
-et que le traqueur n'est pas ouvert (son verrou « AeroClubManagerTraqueur » n'existe pas), il lance traqueur.exe et dit
-« Votre traqueur n'etait pas lance : je le demarre pour vous. » ; si le traqueur ne demarre pas : « Attention : votre
-traqueur n'est pas lance. Vos vols ne seront pas enregistres. » Une seule fois par session du simulateur.
+Petit programme separe (acm_veilleur.exe, sans console, bibliotheque standard + SimConnect.dll) lance a l'ouverture de session
+Windows (valeur « AeroClubManager Veilleur » de HKCU\\...\\Run, sans droit administrateur). Toutes les 10 s il regarde si le
+simulateur tourne (FlightSimulator2024.exe, ou FlightSimulator.exe pour MSFS 2020).
+
+v19 - fausse alerte du 21/10 : la v18 attendait 45 s apres l'apparition du simulateur ; or MSFS 2024 ne lance les add-ons du
+exe.xml qu'une fois son chargement termine (souvent 1 a 4 min). Le veilleur lancait donc le traqueur et parlait AVANT que
+exe.xml ait pu le faire. Desormais :
+  1. il attend que le simulateur soit PRET : une connexion SimConnect de test reussit (ouverte puis refermee aussitot), ou a
+     defaut 4 min apres le demarrage du processus du simulateur (heure de creation du processus, pas l'heure ou le veilleur
+     l'a vu) ;
+  2. puis il laisse a exe.xml le temps de lancer le traqueur : 120 s si le traqueur est bien inscrit dans un exe.xml valable
+     (il le verifie dans les dossiers MSFS du config.json du traqueur), presque rien s'il ne l'est pas (exe.xml ne le lancera
+     jamais : inutile d'attendre) ;
+  3. seulement alors, si le verrou du traqueur (« AeroClubManagerTraqueur ») est absent, il lance traqueur.exe et dit
+     « Votre traqueur n'etait pas lance. Je le demarre pour vous. » ; s'il ne demarre pas : « Attention : votre traqueur n'est
+     pas lance. Vos vols ne seront pas enregistres. » Une seule fois par session du simulateur.
 
 - Jamais deux traqueurs : le traqueur garde son verrou (mutex) ; le veilleur ne le lance que si ce verrou est absent, et un
   second traqueur lance en meme temps (exe.xml du simulateur) se ferme tout seul en voyant le verrou.
-- Pas de conflit avec exe.xml : 45 s d'attente, le simulateur a deja lance le traqueur s'il est inscrit dans exe.xml.
 - Voix : fichiers .wav fabriques par AeroClubManager avec Piper (voix fr_FR-siwis-medium, CC-BY 4.0, voir CREDITS_VOIX.txt),
   joues par winsound (bibliotheque standard). Aucune voix de synthese du systeme.
 - Fichier separe de traqueur.exe : la mise a jour automatique du traqueur remplace traqueur.exe, qui ne doit pas etre
   verrouille par un veilleur en cours d'execution.
 
-Logique testable sans Windows (classe Veilleur, fonctions injectees) : tests/test_veilleur.py.
+Logique testable sans Windows (classe Veilleur, fonctions et horloge injectees) : tests/test_v19.py.
 """
+import json
 import os
 import sys
 import time
@@ -28,10 +38,14 @@ NOM_RUN = "AeroClubManager Veilleur"
 CLE_RUN = r"Software\Microsoft\Windows\CurrentVersion\Run"
 MUTEX_TRAQUEUR = "AeroClubManagerTraqueur"
 MUTEX_VEILLEUR = "AeroClubManagerVeilleur"
+NOM_ADDON_EXE_XML = "AeroClubManager Traqueur"
 PROCESSUS_SIM = ("flightsimulator2024.exe", "flightsimulator.exe")
 PERIODE_S = 10
-ATTENTE_SIM_S = 45          # le simulateur doit tourner depuis 45 s (exe.xml a eu le temps de lancer le traqueur)
-ATTENTE_DEMARRAGE_S = 40    # delai laisse au traqueur pour prendre son verrou
+PRET_AU_PLUS_TARD_S = 240      # sans reponse SimConnect : le simulateur est considere pret 4 min apres son demarrage
+PRET_AU_PLUS_TOT_S = 30        # meme si SimConnect repond tres vite, jamais avant 30 s
+DELAI_EXE_XML_INSCRIT_S = 120  # traqueur inscrit dans exe.xml : on laisse au simulateur 2 min pour le lancer lui-meme
+DELAI_EXE_XML_ABSENT_S = 5     # pas inscrit : exe.xml ne le lancera pas, on agit des que le simulateur est pret
+ATTENTE_DEMARRAGE_S = 40       # delai laisse au traqueur lance pour prendre son verrou
 VOIX_DEMARRE = "veilleur_demarre.wav"
 VOIX_ECHEC = "veilleur_echec.wav"
 
@@ -39,14 +53,31 @@ VOIX_ECHEC = "veilleur_echec.wav"
 class Veilleur:
     """Une etape toutes les PERIODE_S secondes. Fonctions injectees :
     sim() -> identifiant de la session du simulateur (pid) ou None ; traqueur_actif() -> bool ;
-    lancer() -> bool (processus demarre) ; jouer(nom_wav) ; journal(texte) ; horloge() -> secondes."""
+    lancer() -> bool (processus demarre) ; jouer(nom_wav) ; journal(texte) ; horloge() -> secondes ;
+    sim_pret() -> bool (SimConnect accepte une connexion) ; age_sim(session) -> secondes depuis le demarrage du processus
+    du simulateur, ou None ; exe_xml_inscrit() -> bool (le traqueur est inscrit dans un exe.xml valable)."""
 
-    def __init__(self, sim, traqueur_actif, lancer, jouer, journal=lambda t: None, horloge=time.monotonic):
+    def __init__(self, sim, traqueur_actif, lancer, jouer, journal=lambda t: None, horloge=time.monotonic,
+                 sim_pret=lambda: False, age_sim=lambda s: None, exe_xml_inscrit=lambda: False):
         self.sim, self.traqueur_actif, self.lancer, self.jouer, self.journal, self.horloge = sim, traqueur_actif, lancer, jouer, journal, horloge
+        self.sim_pret, self.age_sim, self.exe_xml_inscrit = sim_pret, age_sim, exe_xml_inscrit
         self.session = None
-        self.debut = 0.0
-        self.etat = "repos"          # repos | attente | lance | fait
+        self.debut = 0.0             # demarrage du processus du simulateur (horloge du veilleur)
+        self.etat = "repos"          # repos | chargement | exe_xml | lance | fait
+        self.pret_a = 0.0
+        self.delai = DELAI_EXE_XML_ABSENT_S
         self.lance_a = 0.0
+
+    def _nouvelle_session(self, session, maintenant):
+        age = None
+        try:
+            age = self.age_sim(session)
+        except Exception:
+            age = None
+        self.session, self.etat = session, "chargement"
+        self.debut = maintenant - (age if isinstance(age, (int, float)) and age > 0 else 0.0)
+        txt_age = f", démarré il y a {int(age)} s" if isinstance(age, (int, float)) and age > 0 else ""
+        self.journal(f"Simulateur ouvert (session {session}{txt_age}) : attente de la fin de son chargement.")
 
     def etape(self):
         session = self.sim()
@@ -57,24 +88,48 @@ class Veilleur:
             self.session, self.etat = None, "repos"
             return self.etat
         if session != self.session:
-            self.session, self.debut, self.etat = session, maintenant, "attente"
-            self.journal(f"Simulateur ouvert (session {session}).")
-        if self.etat == "attente" and maintenant - self.debut >= ATTENTE_SIM_S:
-            if self.traqueur_actif():
-                self.etat = "fait"           # lance par exe.xml ou par le pilote : rien a dire
-            else:
-                ok = False
+            self._nouvelle_session(session, maintenant)
+        if self.etat in ("chargement", "exe_xml") and self.traqueur_actif():
+            self.etat = "fait"               # lance par exe.xml ou par le pilote : rien a dire
+            self.journal("Traqueur ouvert (par le simulateur ou par vous) : rien à faire.")
+            return self.etat
+        if self.etat == "chargement":
+            age = maintenant - self.debut
+            pret, raison = False, ""
+            if age >= PRET_AU_PLUS_TOT_S:
                 try:
-                    ok = bool(self.lancer())
+                    if self.sim_pret():
+                        pret, raison = True, "SimConnect répond"
                 except Exception as e:
-                    self.journal(f"Lancement du traqueur impossible ({e}).")
-                if ok:
-                    self.etat, self.lance_a = "lance", maintenant
-                    self.journal("Traqueur absent : lancé par le veilleur.")
-                else:
-                    self.etat = "fait"
-                    self.jouer(VOIX_ECHEC)
-                    self.journal("Traqueur absent et impossible à lancer : avertissement vocal.")
+                    self.journal(f"Test SimConnect impossible ({e}).")
+            if not pret and age >= PRET_AU_PLUS_TARD_S:
+                pret, raison = True, f"{PRET_AU_PLUS_TARD_S // 60} min après son démarrage"
+            if pret:
+                inscrit = False
+                try:
+                    inscrit = bool(self.exe_xml_inscrit())
+                except Exception as e:
+                    self.journal(f"Lecture du exe.xml impossible ({e}).")
+                self.delai = DELAI_EXE_XML_INSCRIT_S if inscrit else DELAI_EXE_XML_ABSENT_S
+                self.etat, self.pret_a = "exe_xml", maintenant
+                self.journal(f"Simulateur prêt ({raison}) ; traqueur {'inscrit' if inscrit else 'NON inscrit'} dans exe.xml : "
+                             f"attente de {self.delai} s avant d'agir.")
+        if self.etat == "exe_xml" and maintenant - self.pret_a >= self.delai:
+            if self.traqueur_actif():
+                self.etat = "fait"
+                return self.etat
+            ok = False
+            try:
+                ok = bool(self.lancer())
+            except Exception as e:
+                self.journal(f"Lancement du traqueur impossible ({e}).")
+            if ok:
+                self.etat, self.lance_a = "lance", maintenant
+                self.journal("Traqueur absent : lancé par le veilleur.")
+            else:
+                self.etat = "fait"
+                self.jouer(VOIX_ECHEC)
+                self.journal("Traqueur absent et impossible à lancer : avertissement vocal.")
         elif self.etat == "lance":
             if self.traqueur_actif():
                 self.etat = "fait"
@@ -246,14 +301,124 @@ def arreter_veilleur():
         pass
 
 
+
+
+# ------------------------------------------------------------------ v19 : simulateur pret ? traqueur inscrit dans exe.xml ?
+def age_processus(pid):
+    """Secondes depuis le demarrage du processus pid (heure de creation Windows), ou None."""
+    if not pid or os.name != "nt":
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+        k = ctypes.WinDLL("kernel32", use_last_error=True)
+        k.OpenProcess.restype = wintypes.HANDLE
+        k.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        h = k.OpenProcess(0x1000, False, int(pid))   # PROCESS_QUERY_LIMITED_INFORMATION
+        if not h:
+            return None
+        try:
+            creation, sortie, noyau, util = (wintypes.FILETIME() for _ in range(4))
+            if not k.GetProcessTimes(h, ctypes.byref(creation), ctypes.byref(sortie), ctypes.byref(noyau), ctypes.byref(util)):
+                return None
+            maintenant = wintypes.FILETIME()
+            k.GetSystemTimeAsFileTime(ctypes.byref(maintenant))
+            f = lambda ft: (ft.dwHighDateTime << 32) | ft.dwLowDateTime   # noqa: E731
+            return max(0.0, (f(maintenant) - f(creation)) / 1e7)
+        finally:
+            k.CloseHandle(h)
+    except Exception:
+        return None
+
+
+def _dll_simconnect():
+    """SimConnect.dll embarquee dans acm_veilleur.exe (ou a cote du script), None si absente."""
+    import ctypes
+    base = getattr(sys, "_MEIPASS", None) or os.path.dirname(os.path.abspath(__file__))
+    for d in (base, os.path.join(base, "SimConnect")):
+        chemin = os.path.join(d, "SimConnect.dll")
+        if os.path.isfile(chemin):
+            try:
+                return ctypes.WinDLL(chemin)
+            except OSError:
+                return None
+    return None
+
+
+def simconnect_pret(dll_loader=_dll_simconnect):
+    """True si le simulateur accepte une connexion SimConnect (connexion de test ouverte puis refermee aussitot)."""
+    try:
+        import ctypes
+        from ctypes import wintypes
+        dll = dll_loader()
+        if dll is None:
+            return False
+        h = wintypes.HANDLE()
+        hr = dll.SimConnect_Open(ctypes.byref(h), b"AeroClubManager Veilleur", None, 0, None, 0)
+        if hr == 0 and h.value:
+            try:
+                dll.SimConnect_Close(h)
+            except Exception:
+                pass
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def _lire_texte(chemin):
+    """Lecture directe (sans os.path.isfile : il se trompe sur certains dossiers MSFS en jonction / chiffres)."""
+    try:
+        with open(chemin, "rb") as f:
+            return f.read().decode("utf-8", "replace")
+    except Exception:
+        return None
+
+
+def exe_xml_inscrit(dossier=None):
+    """True si traqueur.exe de CE dossier est inscrit (et active) dans le exe.xml d'un des dossiers MSFS du config.json."""
+    import xml.etree.ElementTree as ET
+    dossier = dossier or dossier_programme()
+    exe = os.path.normcase(os.path.normpath(os.path.join(dossier, "traqueur.exe")))
+    texte = _lire_texte(os.path.join(dossier, "config.json"))
+    try:
+        cfg = json.loads(texte) if texte else {}
+    except Exception:
+        cfg = {}
+    dossiers = cfg.get("dossiers_msfs") if isinstance(cfg, dict) else None
+    for d in dossiers if isinstance(dossiers, list) else []:
+        if not isinstance(d, str) or "windowsapps" in d.lower():
+            continue
+        if _lire_texte(os.path.join(d, "UserCfg.opt")) is None:
+            continue
+        xml = _lire_texte(os.path.join(d, "exe.xml"))
+        if not xml:
+            continue
+        try:
+            racine = ET.fromstring(xml.lstrip("﻿").encode("utf-8"))
+        except Exception:
+            continue
+        for addon in racine.iter("Launch.Addon"):
+            if (addon.findtext("Name") or "").strip() != NOM_ADDON_EXE_XML:
+                continue
+            if (addon.findtext("Disabled") or "False").strip().lower() == "true":
+                continue
+            chemin = (addon.findtext("Path") or "").strip().strip('"')
+            if chemin and os.path.normcase(os.path.normpath(chemin)) == exe:
+                return True
+    return False
+
+
 def main():
-    global PERIODE_S, ATTENTE_SIM_S, ATTENTE_DEMARRAGE_S
+    global PERIODE_S, PRET_AU_PLUS_TOT_S, PRET_AU_PLUS_TARD_S, DELAI_EXE_XML_INSCRIT_S, DELAI_EXE_XML_ABSENT_S, ATTENTE_DEMARRAGE_S
     if os.environ.get("ACM_VEILLEUR_TEST_RAPIDE") == "1":   # tests GitHub Actions uniquement : delais courts
-        PERIODE_S, ATTENTE_SIM_S, ATTENTE_DEMARRAGE_S = 1, 3, 30
+        PERIODE_S, PRET_AU_PLUS_TOT_S, PRET_AU_PLUS_TARD_S = 1, 2, 4
+        DELAI_EXE_XML_INSCRIT_S, DELAI_EXE_XML_ABSENT_S, ATTENTE_DEMARRAGE_S = 4, 1, 30
     if not prendre_verrou(MUTEX_VEILLEUR):
         return 0
     journal_fichier("Veilleur démarré.")
-    v = Veilleur(session_sim, lambda: verrou_existe(MUTEX_TRAQUEUR), lancer_traqueur, jouer_voix, journal_fichier)
+    v = Veilleur(session_sim, lambda: verrou_existe(MUTEX_TRAQUEUR), lancer_traqueur, jouer_voix, journal_fichier,
+                 sim_pret=simconnect_pret, age_sim=age_processus, exe_xml_inscrit=exe_xml_inscrit)
     while True:
         try:
             v.etape()

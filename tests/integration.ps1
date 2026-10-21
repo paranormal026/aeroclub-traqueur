@@ -14,10 +14,17 @@ $menu = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\AeroClubMa
 $bureau = [Environment]::GetFolderPath("Desktop")
 
 # --- faux MSFS 2024 Steam + Community ---
+# v19 : comme chez le proprietaire le 21/10, le dossier de configuration est une JONCTION vers un dossier CHIFFRE (EFS)
+# range ailleurs (X:\WpSystem\<SID>\...\LocalCache).
 $msfs = Join-Path $env:APPDATA "Microsoft Flight Simulator 2024"
+$msfsReel = "C:\FauxMSFS\WpSystem\S-1-5-21-1-2-3-1001\AppData\Local\Packages\Microsoft.Limitless_8wekyb3d8bbwe\LocalCache"
 $paquets = "C:\FauxMSFS\Paquets"
 $comm = Join-Path $paquets "Community"
-New-Item -ItemType Directory -Force $msfs, $comm | Out-Null
+New-Item -ItemType Directory -Force $msfsReel, $comm | Out-Null
+cipher /e /s:"C:\FauxMSFS\WpSystem" | Out-Null
+if (Test-Path $msfs) { Remove-Item -Recurse -Force $msfs }
+cmd /c mklink /J "$msfs" "$msfsReel" | Out-Null
+Write-Host "   jonction : $((Get-Item -Force $msfs).LinkType) -> $((Get-Item -Force $msfs).Target) ; cible : $((Get-Item -Force $msfsReel).Attributes)"
 Set-Content -Path "$msfs\UserCfg.opt" -Value "Version 1`r`nInstalledPackagesPath `"$paquets`"`r`n" -Encoding ascii
 '<?xml version="1.0" encoding="utf-8"?><SimBase.Document Type="SimConnect" version="1,0"><Descr>SimConnect</Descr><Filename>SimConnect.xml</Filename><Disabled>False</Disabled><Launch.Addon><Name>Autre addon</Name><Disabled>False</Disabled><Path>C:\Autre\autre.exe</Path></Launch.Addon></SimBase.Document>' | Set-Content "$msfs\exe.xml" -Encoding utf8
 foreach ($n in "un-autre-addon", "aeroclubmanager-acm400") {
@@ -49,6 +56,8 @@ $run = (Get-ItemProperty $cleRun -ErrorAction SilentlyContinue)."AeroClubManager
 Verif ($run -eq "`"$app\acm_veilleur.exe`"") "veilleur inscrit au demarrage de Windows (HKCU Run) : $run"
 
 Write-Host "2. Premier lancement du traqueur : liaison, premier contact, lancement automatique"
+# v19 : vieux reglage des v17/v18 (lancement automatique abandonne) : il doit etre retire et ne plus rien bloquer
+'{"lancement_auto_ignore": true}' | Set-Content "$app\config.json" -Encoding utf8
 $env:ACM_TRAQUEUR_URL_TEST = "http://127.0.0.1:8765"
 $env:ACM_VEILLEUR_TEST_RAPIDE = "1"   # veilleur : 3 s d'attente au lieu de 45 s (tests seulement)
 $t = Start-Process -PassThru -FilePath "$app\traqueur.exe" -WorkingDirectory $app -RedirectStandardOutput "$travail\traqueur.txt" -RedirectStandardError "$travail\traqueur_err.txt"
@@ -67,6 +76,8 @@ Verif ($ech.Count -eq 1 -and $ech[0].code -eq "K7P2QX") "code echange une seule 
 Verif (@($ev | Where-Object { $_.url_contient_code }).Count -eq 0) "le code n'apparait dans aucune adresse"
 $cfg = Get-Content "$app\config.json" -Raw | ConvertFrom-Json
 Verif ($cfg.api_token -eq ("a" * 40)) "cle enregistree dans config.json"
+Verif (-not ($cfg.PSObject.Properties.Name -contains "lancement_auto_ignore")) "ancien lancement_auto_ignore retire (v19)"
+Verif (@($cfg.dossiers_msfs).Count -eq 1) "un seul dossier MSFS (jonction et cible comptees une fois) : $($cfg.dossiers_msfs -join ', ')"
 Verif (-not (Test-Path "$app\appairage.txt")) "appairage.txt efface apres usage"
 $c1 = @($ev | Where-Object { $_.action -eq "contact" -and $_.etape -eq "demarrage" })
 $c2 = @($ev | Where-Object { $_.action -eq "contact" -and $_.etape -eq "pret" })

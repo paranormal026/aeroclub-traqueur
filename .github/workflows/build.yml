@@ -29,8 +29,11 @@ jobs:
       - name: Tests v18
         run: python tests/test_v18.py
 
+      - name: Tests v19 (dossier MSFS en jonction chiffree, lancement_auto_ignore, delais du veilleur)
+        run: python tests/test_v19.py
+
       - name: Build veilleur
-        run: pyinstaller --onefile --noconsole --name acm_veilleur --icon installateur/acm.ico --add-data "voix_veilleur;voix_veilleur" acm_veilleur.py
+        run: pyinstaller --onefile --noconsole --name acm_veilleur --icon installateur/acm.ico --add-data "voix_veilleur;voix_veilleur" --add-binary "SimConnect.dll;." acm_veilleur.py
 
       - name: Build exe
         run: pyinstaller --onefile --name traqueur --icon installateur/acm.ico --add-binary "SimConnect.dll;SimConnect" --add-data "dist/acm_veilleur.exe;." traqueur.py

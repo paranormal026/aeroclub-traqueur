@@ -39,7 +39,7 @@ BASE_URL = "https://aeroclubmanager.fr/msfs"
 # Tests automatiques uniquement (GitHub Actions) : faux site local sur 127.0.0.1, jamais une autre adresse
 if re.match(r"^http://127\.0\.0\.1:\d+$", os.environ.get("ACM_TRAQUEUR_URL_TEST", "")):
     BASE_URL = os.environ["ACM_TRAQUEUR_URL_TEST"]
-VERSION_ACTUELLE = 18
+VERSION_ACTUELLE = 19
 DOSSIER_TRAQUEUR = os.path.dirname(os.path.abspath(sys.argv[0]))
 CONFIG_PATH = os.path.join(DOSSIER_TRAQUEUR, 'config.json')
 PAGE_INSTALLATION = "https://aeroclubmanager.fr/msfs/installer.php"
@@ -166,7 +166,7 @@ if verifier_token(API_TOKEN) is False:
     API_TOKEN = charger_token()
 
 # Premier contact : la page « Installer AeroClubManager » du site passe au vert
-MSFS_TROUVES = acm_installation.detecter_msfs()
+MSFS_TROUVES = acm_installation.detecter_msfs(journal=lambda t: acm_installation.ecrire_journal(DOSSIER_TRAQUEUR, t), essais=3, pause=3.0)
 acm_installation.envoyer_contact(requests, BASE_URL, API_TOKEN, VERSION_ACTUELLE, "demarrage",
                                  [n for n, _d in MSFS_TROUVES], False)
 
@@ -184,13 +184,9 @@ EMPLACEMENTS_MSFS_CONNUS = [
 
 
 def detecter_dossiers_msfs():
-    """Dossiers de configuration MSFS presents sur ce PC (reconnaissables a leur UserCfg.opt)."""
-    trouves = []
-    for modele in EMPLACEMENTS_MSFS_CONNUS:
-        dossier = os.path.expandvars(modele)
-        if os.path.isfile(os.path.join(dossier, "UserCfg.opt")):
-            trouves.append(dossier)
-    return trouves
+    """Dossiers de configuration MSFS presents sur ce PC (UserCfg.opt lisible). v19 : sonde robuste (jonction vers un autre
+    disque, dossier chiffre), puis X:\\WpSystem\\<SID>\\... sur tous les disques locaux ; diagnostic exact dans le journal."""
+    return [d for _n, d in acm_installation.detecter_msfs(journal=journal)]
 
 
 def journal(texte):
@@ -210,6 +206,8 @@ def dossiers_msfs(cfg=None):
             frais = charger_config()
             if dossiers:
                 frais['dossiers_msfs'] = dossiers
+                frais.pop('lancement_auto_ignore', None)   # v19 : vieux reglage v17/v18 retire des que MSFS est trouve
+                frais.pop('fenetre_msfs_annulee', None)
             else:
                 frais.pop('dossiers_msfs', None)
             sauver_config(frais)
@@ -222,19 +220,33 @@ def dossiers_msfs(cfg=None):
 def demander_dossier_msfs(choisir=None, essais_max=3):
     """Aucune installation trouvee automatiquement : le pilote designe lui-meme le dossier de CONFIGURATION (v18 : refus
     d'un dossier sans UserCfg.opt ou sous WindowsApps, avec explication et nouvel essai)."""
-    print("\n📁 Le traqueur n'a pas trouvé MSFS automatiquement.")
-    print("   Une fenêtre va s'ouvrir : choisissez le dossier de configuration de MSFS, celui qui contient le fichier UserCfg.opt.")
-    print("   Microsoft Store / Xbox : %LOCALAPPDATA%\\Packages\\Microsoft.Limitless_8wekyb3d8bbwe\\LocalCache")
-    print("   Steam : %APPDATA%\\Microsoft Flight Simulator 2024")
-    print("   (Pas le dossier d'installation du jeu, ni WindowsApps.) Annulez pour ignorer le lancement automatique.")
+    explication = ("Le traqueur AeroClubManager n'a pas trouvé tout seul le dossier de configuration de votre simulateur.\n\n"
+                   "C'est le dossier qui contient le fichier UserCfg.opt :\n"
+                   "  • Microsoft Store / Xbox : %LOCALAPPDATA%\\Packages\\Microsoft.Limitless_8wekyb3d8bbwe\\LocalCache\n"
+                   "    (jeu installé sur un autre disque : X:\\WpSystem\\...\\Microsoft.Limitless_8wekyb3d8bbwe\\LocalCache)\n"
+                   "  • Steam : %APPDATA%\\Microsoft Flight Simulator 2024\n\n"
+                   "Ce n'est PAS le dossier d'installation du jeu (WindowsApps).\n\n"
+                   "Sans ce dossier, le traqueur ne pourra pas se lancer avec le simulateur ni installer la tablette. "
+                   "Si vous annulez, il cherchera de nouveau automatiquement à son prochain démarrage.\n\n"
+                   "Voulez-vous choisir ce dossier maintenant ?")
+    print("\n📁 Le traqueur n'a pas trouvé MSFS automatiquement (détails dans traqueur_journal.txt).")
+    print("   " + explication.replace("\n", "\n   "))
 
     def fenetre():
         import tkinter
-        from tkinter import filedialog
+        from tkinter import filedialog, messagebox
         racine = tkinter.Tk()
         racine.withdraw()
         racine.attributes('-topmost', True)
-        d = filedialog.askdirectory(title="Dossier de configuration de MSFS (contient UserCfg.opt)")
+        try:
+            racine.iconbitmap(os.path.join(DOSSIER_TRAQUEUR, "acm.ico"))
+        except Exception:
+            pass
+        d = None
+        if messagebox.askokcancel("AeroClubManager — dossier du simulateur", explication, parent=racine):
+            depart = os.path.expandvars(r"%LOCALAPPDATA%\Packages")
+            d = filedialog.askdirectory(parent=racine, title="Dossier de configuration de MSFS (celui qui contient UserCfg.opt)",
+                                        initialdir=depart if acm_installation.dossier_existe(depart) else None)
         racine.destroy()
         return d
 
@@ -248,9 +260,9 @@ def demander_dossier_msfs(choisir=None, essais_max=3):
         if not dossier:
             return None
         dossier = os.path.normpath(dossier)
-        raison = acm_installation.dossier_msfs_refus(dossier)
+        retenu, raison = acm_installation.dossier_msfs_retenu(dossier)
         if not raison:
-            return dossier
+            return retenu
         journal(f"⚠️ Dossier refusé : {dossier} ({raison}). Choisissez le dossier qui contient UserCfg.opt.")
     return None
 
@@ -261,7 +273,8 @@ def inscrire_dans_exe_xml(dossier, chemin_exe):
     import shutil
 
     exe_xml = os.path.join(dossier, "exe.xml")
-    if os.path.isfile(exe_xml):
+    existe = acm_installation.fichier_existe(exe_xml)   # v19 : jamais os.path.isfile seul (dossier en jonction / chiffre)
+    if existe:
         arbre = ET.parse(exe_xml)
         racine = arbre.getroot()
     else:
@@ -286,7 +299,7 @@ def inscrire_dans_exe_xml(dossier, chemin_exe):
         ET.SubElement(addon, "Disabled").text = "False"
         ET.SubElement(addon, "Path").text = chemin_exe
 
-    if os.path.isfile(exe_xml):
+    if existe:
         shutil.copy2(exe_xml, exe_xml + ".bak_aeroclub")
     if hasattr(ET, "indent"):
         ET.indent(arbre, space="    ")
@@ -298,26 +311,33 @@ def configurer_lancement_auto():
     if not getattr(sys, 'frozen', False):
         return  # uniquement pour l'exe compile (le chemin d'un .py lance par python n'a pas de sens ici)
     cfg = charger_config()
-    if cfg.get('lancement_auto_ignore'):
-        return
-
+    # v19 : « lancement_auto_ignore » (ecrit par v17/v18 des que la fenetre etait annulee ou la detection ratee) ne bloque
+    # plus rien : la detection est refaite a chaque demarrage et dossiers_msfs() retire ce vieux reglage des qu'elle reussit.
     dossiers = dossiers_msfs(cfg)
     if not dossiers:
+        import datetime
+        aujourd_hui = datetime.date.today().isoformat()
+        if charger_config().get('fenetre_msfs_annulee') == aujourd_hui:
+            journal("⚠️ Dossier de MSFS toujours introuvable : lancement automatique non configuré pour l'instant "
+                    "(nouvel essai au prochain démarrage du traqueur).")
+            return
         choix = demander_dossier_msfs()
+        cfg = charger_config()
         if not choix:
-            print("ℹ️ Lancement automatique avec MSFS ignoré. (Supprimez 'lancement_auto_ignore' du config.json pour réessayer.)")
-            cfg = charger_config()
-            cfg['lancement_auto_ignore'] = True
+            # fenetre fermee : on ne la remontre pas avant demain, mais la detection automatique continue a chaque demarrage
+            cfg['fenetre_msfs_annulee'] = aujourd_hui
             sauver_config(cfg)
+            journal("ℹ️ Dossier de MSFS non choisi : le traqueur le cherchera de nouveau automatiquement à son prochain démarrage.")
             return
         dossiers = [choix]
-        cfg = charger_config()
         cfg['dossiers_msfs'] = dossiers
+        cfg.pop('lancement_auto_ignore', None)
+        cfg.pop('fenetre_msfs_annulee', None)
         sauver_config(cfg)
 
     chemin_exe = os.path.abspath(sys.argv[0])
     # v18 : un echec d'ecriture du exe.xml est note dans le journal et les autres dossiers trouves sont essayes
-    a_essayer = list(dossiers) + [d for d in detecter_dossiers_msfs() if all(os.path.normcase(d) != os.path.normcase(x) for x in dossiers)]
+    a_essayer = list(dossiers) + [d for d in detecter_dossiers_msfs() if all(not acm_installation.meme_dossier(d, x) for x in dossiers)]
     reussis = 0
     for dossier in a_essayer:
         try:
@@ -399,8 +419,9 @@ def dossier_community(dossier_msfs):
                 ligne = ligne.strip()
                 if ligne.startswith("InstalledPackagesPath"):
                     chemin = ligne[len("InstalledPackagesPath"):].strip().strip('"')
-                    communaute = os.path.join(chemin, "Community")
-                    return communaute if os.path.isdir(communaute) else None
+                    # v19 : chemin officiel du UserCfg.opt, seulement pour les paquets ; s'il passe par une jonction que
+                    # Python voit mal, on prend sa cible reelle
+                    return acm_installation.chemin_utilisable(os.path.join(chemin, "Community"))
     except Exception:
         pass
     return None

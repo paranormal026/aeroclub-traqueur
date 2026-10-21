@@ -3,8 +3,8 @@
 SimConnect, le site, les processus Windows et le registre sont simules.
 1. Dossiers MSFS (bug du 21/10 : dossier WindowsApps du jeu garde dans config.json) : validation, correction, fenetre de choix
 2. Plan de vol de la valise (acm_plan_sim) : jamais en vol, charge a l'arret au sol, .PLN ecrit, SimConnect, site prevenu
-3. Veilleur (acm_veilleur) : lance le traqueur absent apres 45 s de simulateur, une seule fois par session, jamais deux
-   traqueurs, voix ; valeur du demarrage de Windows (registre simule)
+3. Veilleur (acm_veilleur) : detection du simulateur, voix, valeur du demarrage de Windows (registre simule) ;
+   les delais du veilleur sont testes dans tests/test_v19.py
 """
 import ast
 import json
@@ -295,84 +295,7 @@ class TestPlanSim(unittest.TestCase):
 
 # ------------------------------------------------------------------ 3. veilleur
 class TestVeilleur(unittest.TestCase):
-    def fabriquer(self, traqueur=False, lancement_ok=True, demarre=True):
-        self.t = [0.0]
-        self.sim = [None]
-        self.traqueur = [traqueur]
-        self.lances, self.voix = [], []
-
-        def lancer():
-            self.lances.append(self.t[0])
-            if lancement_ok and demarre:
-                self.traqueur[0] = True
-            return lancement_ok
-        return av.Veilleur(lambda: self.sim[0], lambda: self.traqueur[0], lancer, self.voix.append, horloge=lambda: self.t[0])
-
-    def avancer(self, v, s, pas=10):
-        for _ in range(int(s / pas)):
-            self.t[0] += pas
-            v.etape()
-
-    def test_lance_le_traqueur_absent(self):
-        v = self.fabriquer()
-        self.avancer(v, 60)
-        self.assertEqual(self.lances, [])                       # simulateur pas ouvert
-        self.sim[0] = 4242
-        self.avancer(v, 40)
-        self.assertEqual(self.lances, [])                       # moins de 45 s : exe.xml a peut-etre lance le traqueur
-        self.avancer(v, 20)
-        self.assertEqual(len(self.lances), 1)
-        self.avancer(v, 20)
-        self.assertEqual(self.voix, [av.VOIX_DEMARRE])
-        self.avancer(v, 600)
-        self.assertEqual(len(self.lances), 1)                   # une seule fois par session
-        self.assertEqual(self.voix, [av.VOIX_DEMARRE])
-
-    def test_traqueur_deja_la(self):
-        v = self.fabriquer(traqueur=True)
-        self.sim[0] = 1
-        self.avancer(v, 300)
-        self.assertEqual(self.lances, [])
-        self.assertEqual(self.voix, [])
-
-    def test_traqueur_ferme_pendant_la_session(self):
-        """Le pilote ferme le traqueur en cours de vol : pas de relance (une fois par session), pas de spam."""
-        v = self.fabriquer(traqueur=True)
-        self.sim[0] = 1
-        self.avancer(v, 60)
-        self.traqueur[0] = False
-        self.avancer(v, 300)
-        self.assertEqual(self.lances, [])
-
-    def test_nouvelle_session(self):
-        v = self.fabriquer()
-        self.sim[0] = 1
-        self.avancer(v, 70)
-        self.assertEqual(len(self.lances), 1)
-        self.sim[0] = None
-        self.traqueur[0] = False
-        self.avancer(v, 30)
-        self.sim[0] = 2                                         # simulateur relance
-        self.avancer(v, 70)
-        self.assertEqual(len(self.lances), 2)
-
-    def test_lancement_impossible(self):
-        v = self.fabriquer(lancement_ok=False)
-        self.sim[0] = 1
-        self.avancer(v, 120)
-        self.assertEqual(self.voix, [av.VOIX_ECHEC])
-        self.avancer(v, 300)
-        self.assertEqual(self.voix, [av.VOIX_ECHEC])
-
-    def test_traqueur_qui_ne_demarre_pas(self):
-        v = self.fabriquer(demarre=False)
-        self.sim[0] = 1
-        self.avancer(v, 60)
-        self.assertEqual(len(self.lances), 1)
-        self.avancer(v, 60)
-        self.assertEqual(self.voix, [av.VOIX_ECHEC])
-        self.assertEqual(len(self.lances), 1)                  # jamais un second lancement
-
+    # v19 : les essais de delais (simulateur pret, exe.xml, une fois par session) sont dans tests/test_v19.py
     def test_detection_simulateur(self):
         self.assertEqual(av.session_sim(lambda: {"explorer.exe": 1, "flightsimulator2024.exe": 77}), 77)
         self.assertEqual(av.session_sim(lambda: {"flightsimulator.exe": 5}), 5)

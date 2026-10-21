@@ -494,13 +494,30 @@ def meme_dossier(a, b):
     return _chemin_egal(a, b) or _identite(a) == _identite(b)
 
 
-def detecter_msfs(journal=None, wpsystem=None, emplacements=None):
+def detecter_msfs(journal=None, wpsystem=None, emplacements=None, essais=1, pause=2.0):
     """[(type, dossier)] des installations MSFS trouvees (UserCfg.opt lisible). Emplacements officiels d'abord, puis
     X:\\WpSystem\\<SID>\\... sur tous les disques locaux. journal : diagnostic ecrit si un emplacement existe mais n'est pas
     lisible (textes exacts des exceptions)."""
     emplacements = emplacements if emplacements is not None else [(n, os.path.expandvars(m)) for n, m in EMPLACEMENTS_MSFS]
     if wpsystem is None:
         wpsystem = emplacements_wpsystem(_sid_utilisateur())
+    for essai in range(max(1, int(essais))):
+        if essai:
+            import time as _t
+            _t.sleep(pause)   # disque qui se reveille, dossier pas encore accessible : on reessaie avant de conclure
+        trouves = _detecter_une_fois(journal, emplacements, wpsystem)
+        if trouves:
+            return trouves
+    if journal:   # rien trouve : la raison exacte de chaque emplacement, pour comprendre sans deviner
+        essais_txt = []
+        for _n, dossier in list(emplacements) + list(wpsystem):
+            _r, notes = sonder_dossier_msfs(dossier)
+            essais_txt.append(f"{dossier} -> {' | '.join(notes) or 'introuvable'}")
+        journal_une_fois(journal, "Aucun dossier de configuration MSFS trouvé automatiquement. Essais : " + " ;; ".join(essais_txt))
+    return []
+
+
+def _detecter_une_fois(journal, emplacements, wpsystem):
     trouves = []
     for nature, dossier in list(emplacements) + list(wpsystem):
         retenu, notes = sonder_dossier_msfs(dossier)
