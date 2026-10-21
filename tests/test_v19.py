@@ -331,7 +331,7 @@ class TestLancementAutoIgnore(unittest.TestCase):
             src = f.read()
         self.assertNotIn("cfg['lancement_auto_ignore'] = True", src)
         self.assertNotIn("if cfg.get('lancement_auto_ignore'):", src)
-        self.assertEqual(re.search(r"^VERSION_ACTUELLE = (\d+)", src, re.M).group(1), "19")
+        self.assertGreaterEqual(int(re.search(r"^VERSION_ACTUELLE = (\d+)", src, re.M).group(1)), 19)   # v20 et suivantes acceptees
         # vouvoiement dans les nouveaux textes du pilote
         self.assertNotRegex(src, r"(?i)\b(tu|ton|ta|tes)\b (dossier|simulateur|traqueur)")
 
