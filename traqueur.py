@@ -39,7 +39,7 @@ BASE_URL = "https://aeroclubmanager.fr/msfs"
 # Tests automatiques uniquement (GitHub Actions) : faux site local sur 127.0.0.1, jamais une autre adresse
 if re.match(r"^http://127\.0\.0\.1:\d+$", os.environ.get("ACM_TRAQUEUR_URL_TEST", "")):
     BASE_URL = os.environ["ACM_TRAQUEUR_URL_TEST"]
-VERSION_ACTUELLE = 17
+VERSION_ACTUELLE = 18
 DOSSIER_TRAQUEUR = os.path.dirname(os.path.abspath(sys.argv[0]))
 CONFIG_PATH = os.path.join(DOSSIER_TRAQUEUR, 'config.json')
 PAGE_INSTALLATION = "https://aeroclubmanager.fr/msfs/installer.php"
@@ -193,28 +193,66 @@ def detecter_dossiers_msfs():
     return trouves
 
 
-def demander_dossier_msfs():
-    """Aucune installation trouvee automatiquement : le pilote designe lui-meme le dossier."""
-    print("\n📁 Le traqueur n'a pas trouve MSFS automatiquement.")
-    print("   Une fenetre va s'ouvrir : choisis le dossier de configuration de MSFS")
-    print("   (celui qui contient le fichier UserCfg.opt). Annule pour ignorer le lancement automatique.")
-    try:
+def journal(texte):
+    """Message visible : console ET fichier traqueur_journal.txt (v18)."""
+    print(texte)
+    acm_installation.ecrire_journal(DOSSIER_TRAQUEUR, texte)
+
+
+def dossiers_msfs(cfg=None):
+    """Dossiers de configuration MSFS valables (v18) : ceux du config.json s'ils contiennent UserCfg.opt et ne sont pas
+    sous WindowsApps, sinon ceux trouves automatiquement ; config.json est corrige s'il le faut. Utilise partout
+    (exe.xml, tablette, effets, personnages, avions, services au sol)."""
+    cfg = charger_config() if cfg is None else cfg
+    dossiers, change = acm_installation.dossiers_msfs_valides(cfg, detecter=detecter_dossiers_msfs, journal=journal)
+    if change:
+        try:
+            frais = charger_config()
+            if dossiers:
+                frais['dossiers_msfs'] = dossiers
+            else:
+                frais.pop('dossiers_msfs', None)
+            sauver_config(frais)
+            journal(f"📁 Dossiers MSFS corrigés dans config.json : {', '.join(dossiers) if dossiers else 'aucun pour l’instant'}.")
+        except Exception:
+            pass
+    return dossiers
+
+
+def demander_dossier_msfs(choisir=None, essais_max=3):
+    """Aucune installation trouvee automatiquement : le pilote designe lui-meme le dossier de CONFIGURATION (v18 : refus
+    d'un dossier sans UserCfg.opt ou sous WindowsApps, avec explication et nouvel essai)."""
+    print("\n📁 Le traqueur n'a pas trouvé MSFS automatiquement.")
+    print("   Une fenêtre va s'ouvrir : choisissez le dossier de configuration de MSFS, celui qui contient le fichier UserCfg.opt.")
+    print("   Microsoft Store / Xbox : %LOCALAPPDATA%\\Packages\\Microsoft.Limitless_8wekyb3d8bbwe\\LocalCache")
+    print("   Steam : %APPDATA%\\Microsoft Flight Simulator 2024")
+    print("   (Pas le dossier d'installation du jeu, ni WindowsApps.) Annulez pour ignorer le lancement automatique.")
+
+    def fenetre():
         import tkinter
         from tkinter import filedialog
         racine = tkinter.Tk()
         racine.withdraw()
         racine.attributes('-topmost', True)
-        dossier = filedialog.askdirectory(title="Dossier de configuration de MSFS (contient UserCfg.opt)")
+        d = filedialog.askdirectory(title="Dossier de configuration de MSFS (contient UserCfg.opt)")
         racine.destroy()
-    except Exception as e:
-        print(f"⚠️ Impossible d'ouvrir la fenetre de selection ({e}).")
-        return None
-    if not dossier:
-        return None
-    dossier = os.path.normpath(dossier)
-    if not os.path.isfile(os.path.join(dossier, "UserCfg.opt")):
-        print("⚠️ Ce dossier ne contient pas de UserCfg.opt : il sera utilise quand meme.")
-    return dossier
+        return d
+
+    choisir = choisir or fenetre
+    for _essai in range(essais_max):
+        try:
+            dossier = choisir()
+        except Exception as e:
+            journal(f"⚠️ Impossible d'ouvrir la fenêtre de sélection ({e}).")
+            return None
+        if not dossier:
+            return None
+        dossier = os.path.normpath(dossier)
+        raison = acm_installation.dossier_msfs_refus(dossier)
+        if not raison:
+            return dossier
+        journal(f"⚠️ Dossier refusé : {dossier} ({raison}). Choisissez le dossier qui contient UserCfg.opt.")
+    return None
 
 
 def inscrire_dans_exe_xml(dossier, chemin_exe):
@@ -263,34 +301,87 @@ def configurer_lancement_auto():
     if cfg.get('lancement_auto_ignore'):
         return
 
-    dossiers = [d for d in cfg.get('dossiers_msfs', []) if os.path.isdir(d)]
-    if not dossiers:
-        dossiers = detecter_dossiers_msfs()
+    dossiers = dossiers_msfs(cfg)
     if not dossiers:
         choix = demander_dossier_msfs()
         if not choix:
-            print("ℹ️ Lancement automatique avec MSFS ignore. (Supprime 'lancement_auto_ignore' du config.json pour reessayer.)")
+            print("ℹ️ Lancement automatique avec MSFS ignoré. (Supprimez 'lancement_auto_ignore' du config.json pour réessayer.)")
+            cfg = charger_config()
             cfg['lancement_auto_ignore'] = True
             sauver_config(cfg)
             return
         dossiers = [choix]
-
-    cfg['dossiers_msfs'] = dossiers
-    sauver_config(cfg)
+        cfg = charger_config()
+        cfg['dossiers_msfs'] = dossiers
+        sauver_config(cfg)
 
     chemin_exe = os.path.abspath(sys.argv[0])
-    for dossier in dossiers:
+    # v18 : un echec d'ecriture du exe.xml est note dans le journal et les autres dossiers trouves sont essayes
+    a_essayer = list(dossiers) + [d for d in detecter_dossiers_msfs() if all(os.path.normcase(d) != os.path.normcase(x) for x in dossiers)]
+    reussis = 0
+    for dossier in a_essayer:
         try:
             if inscrire_dans_exe_xml(dossier, chemin_exe):
-                print(f"✅ Le traqueur se lancera automatiquement avec MSFS ({dossier}).")
+                journal(f"✅ Le traqueur se lancera automatiquement avec MSFS ({dossier}).")
+            reussis += 1
         except Exception as e:
-            print(f"⚠️ Impossible de configurer le lancement automatique dans {dossier} ({e}).")
+            journal(f"⚠️ Impossible d'écrire le lancement automatique dans {os.path.join(dossier, 'exe.xml')} ({e}).")
+    if not reussis:
+        journal("⚠️ Lancement automatique avec MSFS NON configuré : lancez le traqueur vous-même avant le simulateur "
+                "(le veilleur AeroClubManager le lancera aussi s'il le voit absent).")
 
 
 try:
     configurer_lancement_auto()
 except Exception as e:
     print(f"⚠️ Lancement automatique non configure ({e}). Le traqueur fonctionne normalement.")
+
+
+# =========================================================
+# VEILLEUR (v18) : petit programme lance avec Windows qui demarre le traqueur s'il voit MSFS ouvert sans lui
+# =========================================================
+import acm_veilleur
+
+
+def _empreinte(chemin):
+    import hashlib
+    h = hashlib.sha256()
+    with open(chemin, "rb") as f:
+        for bloc in iter(lambda: f.read(1 << 20), b""):
+            h.update(bloc)
+    return h.hexdigest()
+
+
+def installer_veilleur():
+    """Copie acm_veilleur.exe (embarque dans traqueur.exe) a cote du traqueur, l'inscrit au demarrage de Windows
+    (HKCU, sans administrateur) et le lance s'il ne tourne pas. Desactivable : « veilleur_ignore »: true dans config.json."""
+    if not getattr(sys, 'frozen', False):
+        return
+    if charger_config().get('veilleur_ignore'):
+        return
+    source = os.path.join(getattr(sys, '_MEIPASS', ''), acm_veilleur.NOM_EXE)
+    if not os.path.isfile(source):
+        return
+    cible = os.path.join(DOSSIER_TRAQUEUR, acm_veilleur.NOM_EXE)
+    if not os.path.isfile(cible) or _empreinte(source) != _empreinte(cible):
+        if acm_veilleur.verrou_existe(acm_veilleur.MUTEX_VEILLEUR):
+            acm_veilleur.arreter_veilleur()   # ancienne version en cours : remplacee
+            time.sleep(1.5)
+        import shutil
+        shutil.copyfile(source, cible + ".tmp")
+        os.replace(cible + ".tmp", cible)
+        journal("🔔 Veilleur AeroClubManager installé : si vous ouvrez MSFS sans le traqueur, il le lancera pour vous.")
+    if acm_veilleur.inscrire_demarrage_windows(cible):
+        journal("🔔 Veilleur inscrit au démarrage de Windows.")
+    if not acm_veilleur.verrou_existe(acm_veilleur.MUTEX_VEILLEUR):
+        import subprocess
+        subprocess.Popen([cible], cwd=DOSSIER_TRAQUEUR, creationflags=0x00000008 | 0x08000000, close_fds=True)
+
+
+try:
+    installer_veilleur()
+except Exception as e:
+    journal(f"⚠️ Veilleur non installé ({e}). Le traqueur fonctionne normalement.")
 
 
 # =========================================================
@@ -352,7 +443,7 @@ def installer_app_efb():
     import zipfile
 
     cfg = charger_config()
-    dossiers = [d for d in cfg.get('dossiers_msfs', []) if os.path.isdir(d)] or detecter_dossiers_msfs()
+    dossiers = dossiers_msfs(cfg)   # v18 : dossiers verifies (UserCfg.opt, jamais WindowsApps)
     communautes = [c for c in (dossier_community(d) for d in dossiers) if c]
     if not communautes:
         return
@@ -429,7 +520,7 @@ def installer_effets_mission():
     import zipfile
 
     cfg = charger_config()
-    dossiers = [d for d in cfg.get('dossiers_msfs', []) if os.path.isdir(d)] or detecter_dossiers_msfs()
+    dossiers = dossiers_msfs(cfg)   # v18 : dossiers verifies (UserCfg.opt, jamais WindowsApps)
     communautes = [c for c in (dossier_community(d) for d in dossiers) if c]
     if not communautes:
         return
@@ -487,7 +578,7 @@ def installer_personnages():
     import zipfile
 
     cfg = charger_config()
-    dossiers = [d for d in cfg.get('dossiers_msfs', []) if os.path.isdir(d)] or detecter_dossiers_msfs()
+    dossiers = dossiers_msfs(cfg)   # v18 : dossiers verifies (UserCfg.opt, jamais WindowsApps)
     communautes = [c for c in (dossier_community(d) for d in dossiers) if c]
     if not communautes:
         return
@@ -562,7 +653,7 @@ def installer_avions_acm():
     import zipfile
 
     cfg = charger_config()
-    dossiers = [d for d in cfg.get('dossiers_msfs', []) if os.path.isdir(d)] or detecter_dossiers_msfs()
+    dossiers = dossiers_msfs(cfg)   # v18 : dossiers verifies (UserCfg.opt, jamais WindowsApps)
     communautes = [c for c in (dossier_community(d) for d in dossiers) if c]
     if not communautes:
         return
@@ -666,7 +757,7 @@ except Exception as e:
 def signaler_installation_terminee():
     """Second contact, une fois les paquets installes : la page du site affiche ce qui est en place."""
     cfg = charger_config()
-    dossiers = [d for d in cfg.get('dossiers_msfs', []) if os.path.isdir(d)] or detecter_dossiers_msfs()
+    dossiers = dossiers_msfs(cfg)   # v18 : dossiers verifies (UserCfg.opt, jamais WindowsApps)
     communautes = [c for c in (dossier_community(d) for d in dossiers) if c]
     paquets = {}
     for cle, nom in acm_installation.PAQUETS_TRAQUEUR.items():
@@ -1136,6 +1227,12 @@ print("=" * 60)
 
 sim, aq = connecter_simconnect()
 
+# v18 : plan de vol envoye depuis la valise du site, charge par SimConnect avion arrete au sol (acm_plan_sim.py)
+import acm_plan_sim
+plan_simulateur = acm_plan_sim.PlanSimulateur(requests, BASE_URL, API_TOKEN, DOSSIER_TRAQUEUR,
+                                              lambda chemin: acm_plan_sim.chargeur_simconnect(sim)(chemin),
+                                              journal=journal, config=charger_config, sauver=sauver_config)
+
 # --- VARIABLES GLOBALES DE SUIVI ---
 points_valides = set()
 total_distance_nm = 0.0
@@ -1283,6 +1380,12 @@ try:
                                                                         engine_on != 0, agl, extra.get('heading_rad'))
             except Exception:
                 position_fictive = paquet_incomplet
+
+            # v18 : plan de vol de la valise (jamais sur une position fictive ni un paquet incomplet)
+            try:
+                plan_simulateur.maj(on_ground == 1, float(extra.get('ground_speed', speed) or 0.0), position_fictive)
+            except Exception:
+                pass
 
             # Validation des points VAC (si examen actif)
             message_vac = None

@@ -5,6 +5,7 @@ on:
   push:
     paths:
       - 'traqueur.py'
+      - 'acm_*.py'
 
 jobs:
   build:
@@ -25,10 +26,18 @@ jobs:
           $pkgDir = python -c "import SimConnect, os; print(os.path.dirname(SimConnect.__file__))"
           Copy-Item "SimConnect.dll" "$pkgDir\SimConnect.dll" -Force
 
+      - name: Tests v18
+        run: python tests/test_v18.py
+
+      - name: Build veilleur
+        run: pyinstaller --onefile --noconsole --name acm_veilleur --icon installateur/acm.ico --add-data "voix_veilleur;voix_veilleur" acm_veilleur.py
+
       - name: Build exe
-        run: pyinstaller --onefile --name traqueur --add-binary "SimConnect.dll;SimConnect" traqueur.py
+        run: pyinstaller --onefile --name traqueur --icon installateur/acm.ico --add-binary "SimConnect.dll;SimConnect" --add-data "dist/acm_veilleur.exe;." traqueur.py
 
       - uses: actions/upload-artifact@v4
         with:
           name: traqueur-exe
-          path: dist/traqueur.exe
+          path: |
+            dist/traqueur.exe
+            dist/acm_veilleur.exe

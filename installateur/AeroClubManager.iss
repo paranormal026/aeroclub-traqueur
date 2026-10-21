@@ -64,6 +64,9 @@ fr.ClickFinish=Cliquez sur Terminer : le traqueur va s'ouvrir et finir l'install
 
 [Files]
 Source: "..\dist\traqueur.exe"; DestDir: "{app}"; Flags: ignoreversion
+; v18 : veilleur (lance avec Windows, demarre le traqueur s'il voit MSFS ouvert sans lui ; voix Piper incluses dans l'exe)
+Source: "..\dist\acm_veilleur.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\voix_veilleur\CREDITS_VOIX.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "acm.ico"; DestDir: "{app}"; Flags: ignoreversion
 Source: "LISEZ-MOI.txt"; DestDir: "{app}"; Flags: ignoreversion
 
@@ -74,6 +77,10 @@ Name: "{userdesktop}\AeroClubManager Traqueur"; Filename: "{app}\traqueur.exe"; 
 
 [Run]
 Filename: "{app}\traqueur.exe"; WorkingDir: "{app}"; Description: "Lancer le traqueur AeroClubManager maintenant (recommandé)"; Flags: postinstall nowait skipifsilent
+
+[Registry]
+; v18 : veilleur au demarrage de la session Windows (utilisateur courant, sans administrateur) ; seule cette valeur est retiree
+Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "AeroClubManager Veilleur"; ValueData: """{app}\acm_veilleur.exe"""; Flags: uninsdeletevalue
 
 [UninstallRun]
 Filename: "{app}\traqueur.exe"; Parameters: "--desinstaller"; WorkingDir: "{app}"; Flags: runhidden waituntilterminated; RunOnceId: "NettoyageAeroClubManager"
@@ -86,6 +93,12 @@ Type: files; Name: "{app}\live_status.json"
 Type: files; Name: "{app}\traqueur_maj.exe"
 Type: files; Name: "{app}\_maj.bat"
 Type: filesandordirs; Name: "{app}\services_sol"
+; v18 : veilleur, journaux, plans de vol recus du site
+Type: files; Name: "{app}\acm_veilleur.exe"
+Type: files; Name: "{app}\acm_veilleur.exe.tmp"
+Type: files; Name: "{app}\veilleur_journal.txt*"
+Type: files; Name: "{app}\traqueur_journal.txt*"
+Type: filesandordirs; Name: "{app}\plans_de_vol"
 Type: dirifempty; Name: "{app}"
 
 [Code]
@@ -142,6 +155,15 @@ begin
   if not CodeValide(CodeLiaison) then
     CodeLiaison := CodeDepuisNom(ExpandConstant('{srcexe}'));
   Result := True;
+end;
+
+{ v18 : un veilleur deja lance garde acm_veilleur.exe ouvert : on l'arrete avant de copier les fichiers (le traqueur le relance) }
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  Code: Integer;
+begin
+  Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM acm_veilleur.exe', '', SW_HIDE, ewWaitUntilTerminated, Code);
+  Result := '';
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);

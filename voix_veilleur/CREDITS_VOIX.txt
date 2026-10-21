@@ -1,0 +1,10 @@
+Voix du veilleur AeroClubManager (veilleur_demarre.wav, veilleur_echec.wav)
+Fabriquees par AeroClubManager avec des outils libres :
+
+Moteur : Piper (https://github.com/rhasspy/piper), licence MIT.
+Voix : fr_FR-siwis-medium (https://huggingface.co/rhasspy/piper-voices), base SIWIS French Speech Synthesis Database
+(J. Yamagishi, P.-E. Honnet, P. Garner, A. Lazaridis, University of Edinburgh / Idiap), licence CC-BY 4.0 -
+https://creativecommons.org/licenses/by/4.0/
+Modele de voix Piper : Michael Hansen (rhasspy).
+Textes : « Votre traqueur n'etait pas lance. Je le demarre pour vous. » et
+« Attention. Votre traqueur n'est pas lance. Vos vols ne seront pas enregistres. »

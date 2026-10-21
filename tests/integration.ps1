@@ -42,9 +42,15 @@ Verif (Test-Path "$bureau\AeroClubManager Traqueur.lnk") "raccourci Bureau"
 Verif (-not (Test-Path "$app\config.json")) "aucune cle ecrite par l'installateur"
 $reg = Get-ChildItem "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall" | Where-Object { $_.PSChildName -like "*BB80F071*" }
 Verif ($null -ne $reg) "inscrit dans Applications (HKCU, sans droits administrateur)"
+# v18 : veilleur
+$cleRun = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
+Verif (Test-Path "$app\acm_veilleur.exe") "veilleur acm_veilleur.exe installe"
+$run = (Get-ItemProperty $cleRun -ErrorAction SilentlyContinue)."AeroClubManager Veilleur"
+Verif ($run -eq "`"$app\acm_veilleur.exe`"") "veilleur inscrit au demarrage de Windows (HKCU Run) : $run"
 
 Write-Host "2. Premier lancement du traqueur : liaison, premier contact, lancement automatique"
 $env:ACM_TRAQUEUR_URL_TEST = "http://127.0.0.1:8765"
+$env:ACM_VEILLEUR_TEST_RAPIDE = "1"   # veilleur : 3 s d'attente au lieu de 45 s (tests seulement)
 $t = Start-Process -PassThru -FilePath "$app\traqueur.exe" -WorkingDirectory $app -RedirectStandardOutput "$travail\traqueur.txt" -RedirectStandardError "$travail\traqueur_err.txt"
 $fin = (Get-Date).AddSeconds(90); $ev = @()
 while ((Get-Date) -lt $fin) {
@@ -70,6 +76,30 @@ $xml = Get-Content "$msfs\exe.xml" -Raw
 Verif ($xml -match [regex]::Escape("$app\traqueur.exe")) "lancement automatique inscrit dans exe.xml"
 Verif ($xml -match "Autre addon") "autre add-on du exe.xml conserve"
 
+Write-Host "2b. Veilleur : faux simulateur ouvert sans traqueur -> le veilleur lance le traqueur (une seule fois)"
+$fin = (Get-Date).AddSeconds(20)
+while (-not (Get-Process acm_veilleur -ErrorAction SilentlyContinue) -and (Get-Date) -lt $fin) { Start-Sleep 1 }
+Verif (@(Get-Process acm_veilleur -ErrorAction SilentlyContinue).Count -ge 1) "veilleur lance par le traqueur"
+Verif (@(Get-Process traqueur -ErrorAction SilentlyContinue).Count -eq 0) "aucun traqueur ouvert au depart"
+Copy-Item "$env:SystemRoot\System32\PING.EXE" "$travail\FlightSimulator2024.exe" -Force
+$fauxSim = Start-Process -PassThru -WindowStyle Hidden -FilePath "$travail\FlightSimulator2024.exe" -ArgumentList "-n", "120", "127.0.0.1"
+$fin = (Get-Date).AddSeconds(60)
+while (-not (Get-Process traqueur -ErrorAction SilentlyContinue) -and (Get-Date) -lt $fin) { Start-Sleep 1 }
+Verif (@(Get-Process traqueur -ErrorAction SilentlyContinue).Count -ge 1) "traqueur lance par le veilleur"
+Start-Sleep 15
+$n = @(Get-Process traqueur -ErrorAction SilentlyContinue).Count
+Verif ($n -le 2) "un seul traqueur (lanceur PyInstaller + programme) : $n processus"
+$jv = Get-Content "$app\veilleur_journal.txt" -Raw -ErrorAction SilentlyContinue
+Write-Host "      | $jv"
+Verif ($jv -match "lanc. par le veilleur") "journal du veilleur : traqueur lance"
+# second lancement manuel pendant que le premier tourne : il se ferme tout seul (verrou du traqueur)
+$t2 = Start-Process -PassThru -FilePath "$app\traqueur.exe" -WorkingDirectory $app
+Start-Sleep 12
+Verif ($t2.HasExited) "un second traqueur se ferme tout seul (jamais deux traqueurs)"
+Stop-Process -Id $fauxSim.Id -Force -ErrorAction SilentlyContinue
+Get-Process traqueur -ErrorAction SilentlyContinue | Stop-Process -Force
+Start-Sleep 2
+
 Write-Host "3. Desinstallation : seulement ce que le traqueur a installe"
 # le faux site ne sert aucun paquet : on simule ceux que le traqueur aurait installes
 foreach ($n in "aeroclubmanager-efb", "aeroclubmanager-persos") {
@@ -92,6 +122,9 @@ Verif (Test-Path "$comm\un-autre-addon\manifest.json") "add-on etranger conserve
 Verif (Test-Path "$msfs\UserCfg.opt") "UserCfg.opt intact"
 $xml = Get-Content "$msfs\exe.xml" -Raw
 Verif (($xml -notmatch "AeroClubManager Traqueur") -and ($xml -match "Autre addon")) "exe.xml : seule notre ligne retiree"
+$run = (Get-ItemProperty $cleRun -ErrorAction SilentlyContinue)."AeroClubManager Veilleur"
+Verif ($null -eq $run) "veilleur retire du demarrage de Windows"
+Verif (@(Get-Process acm_veilleur -ErrorAction SilentlyContinue).Count -eq 0) "veilleur arrete"
 
 Write-Host "4. Installateur renomme sans code : pas de code, la fenetre de secours prendra le relais"
 $sans = Join-Path $travail "setup.exe"

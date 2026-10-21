@@ -6,7 +6,7 @@ name: Installateur AeroClubManager
 on:
   workflow_dispatch:
   push:
-    branches: [installateur]
+    branches: [installateur, plan-efb]
 
 jobs:
   installateur:
@@ -34,11 +34,17 @@ jobs:
       - name: Tests du module d'installation
         run: python tests/test_installation.py
 
-      - name: Compilation de traqueur.py (verification de syntaxe)
-        run: python -m py_compile traqueur.py acm_installation.py
+      - name: Tests v18 (dossiers MSFS, plan de vol de la valise, veilleur)
+        run: python tests/test_v18.py
 
-      - name: Construction de traqueur.exe
-        run: pyinstaller --onefile --name traqueur --icon installateur/acm.ico --add-binary "SimConnect.dll;SimConnect" traqueur.py
+      - name: Compilation de traqueur.py (verification de syntaxe)
+        run: python -m py_compile traqueur.py acm_installation.py acm_plan_sim.py acm_veilleur.py
+
+      - name: Construction du veilleur (acm_veilleur.exe, sans console, voix incluses)
+        run: pyinstaller --onefile --noconsole --name acm_veilleur --icon installateur/acm.ico --add-data "voix_veilleur;voix_veilleur" acm_veilleur.py
+
+      - name: Construction de traqueur.exe (veilleur embarque)
+        run: pyinstaller --onefile --name traqueur --icon installateur/acm.ico --add-binary "SimConnect.dll;SimConnect" --add-data "dist/acm_veilleur.exe;." traqueur.py
 
       - name: Certificat (seulement si configure)
         if: env.ACM_CERT_PFX != ''
@@ -87,6 +93,7 @@ jobs:
           path: |
             sortie/AeroClubManager-Installation.exe
             dist/traqueur.exe
+            dist/acm_veilleur.exe
 
       - uses: actions/upload-artifact@v4
         if: always()

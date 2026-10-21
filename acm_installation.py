@@ -211,6 +211,70 @@ def detecter_msfs():
     return trouves
 
 
+# ------------------------------------------------------------------ dossiers de configuration MSFS (v18, 21/10/2026)
+# Cas reel du 21/10 : config.json contenait « E:\WindowsApps\Microsoft.Limitless_... » (dossier du JEU, en lecture seule).
+# Seule source possible dans le code : l'ancienne fenetre de choix du dossier (demander_dossier_msfs) qui gardait « quand meme »
+# un dossier sans UserCfg.opt ; le chemin restait ensuite dans config.json et servait a chaque demarrage (exe.xml, paquets)
+# sans jamais etre reverifie. Desormais un dossier n'est retenu que s'il contient UserCfg.opt et n'est pas sous WindowsApps.
+def dossier_msfs_refus(dossier):
+    """None si le dossier est un vrai dossier de configuration MSFS, sinon la raison du refus (texte pour le pilote)."""
+    if not isinstance(dossier, str) or not dossier.strip():
+        return "dossier vide"
+    d = os.path.normpath(dossier)
+    morceaux = [m.lower() for m in re.split(r"[\\/]+", d) if m]
+    if "windowsapps" in morceaux:
+        return "c'est le dossier d'installation du jeu (WindowsApps, en lecture seule), pas son dossier de configuration"
+    if not os.path.isdir(d):
+        return "ce dossier n'existe pas"
+    if not os.path.isfile(os.path.join(d, "UserCfg.opt")):
+        return "ce dossier ne contient pas le fichier UserCfg.opt"
+    return None
+
+
+def dossiers_msfs_valides(cfg, detecter=None, journal=None):
+    """Dossiers MSFS a utiliser : ceux du config.json qui sont valables, sinon ceux trouves automatiquement.
+    Corrige cfg['dossiers_msfs'] en place ; renvoie (dossiers, change) ; change = True s'il faut sauver config.json."""
+    detecter = detecter or (lambda: [d for _n, d in detecter_msfs()])
+    stockes = cfg.get("dossiers_msfs", [])
+    if not isinstance(stockes, list):
+        stockes = []
+    bons, refuses = [], []
+    for d in stockes:
+        raison = dossier_msfs_refus(d)
+        if raison:
+            refuses.append((d, raison))
+        elif all(not _chemin_egal(d, x) for x in bons):
+            bons.append(os.path.normpath(d))
+    for d, raison in refuses:
+        if journal:
+            journal(f"Dossier MSFS ignoré : {d} ({raison}).")
+    if not bons:
+        for d in detecter():
+            if not dossier_msfs_refus(d) and all(not _chemin_egal(d, x) for x in bons):
+                bons.append(os.path.normpath(d))
+    avant = [os.path.normpath(x) for x in stockes if isinstance(x, str)]
+    change = avant != bons or ("dossiers_msfs" in cfg and not bons)
+    if change:
+        if bons:
+            cfg["dossiers_msfs"] = bons
+        else:
+            cfg.pop("dossiers_msfs", None)
+    return bons, change
+
+
+def ecrire_journal(dossier_app, texte):
+    """Journal visible du traqueur (traqueur_journal.txt a cote de l'exe), 200 Ko au plus."""
+    import time as _t
+    chemin = os.path.join(dossier_app, "traqueur_journal.txt")
+    try:
+        if os.path.isfile(chemin) and os.path.getsize(chemin) > 200 * 1024:
+            os.replace(chemin, chemin + ".ancien")
+        with open(chemin, "a", encoding="utf-8") as f:
+            f.write(_t.strftime("%Y-%m-%d %H:%M:%S ") + str(texte).replace("\n", " ") + "\n")
+    except Exception:
+        pass
+
+
 def envoyer_contact(requests_mod, base_url, cle, version, etape, msfs_types, community_ok, paquets=None):
     """Previent le site que le traqueur tourne (la page d'installation passe au vert). Cle dans le corps JSON."""
     try:
@@ -302,7 +366,7 @@ def desinstaller(dossier_app, chemin_exe, journal=_dire):
         except Exception as e:
             bilan["paquets_echec"].append(cible)
             journal(f"Impossible de retirer {cible} ({e}) : fermez le simulateur puis supprimez-le à la main.")
-    dossiers = [d for d in cfg.get("dossiers_msfs", []) if isinstance(d, str) and os.path.isdir(d)]
+    dossiers = [d for d in cfg.get("dossiers_msfs", []) if not dossier_msfs_refus(d)]
     for _n, d in detecter_msfs():
         if all(not _chemin_egal(d, x) for x in dossiers):
             dossiers.append(d)
@@ -313,6 +377,14 @@ def desinstaller(dossier_app, chemin_exe, journal=_dire):
                 journal(f"Lancement automatique retiré de {os.path.join(d, 'exe.xml')}")
         except Exception as e:
             journal(f"exe.xml de {d} non modifié ({e})")
+    # v18 : veilleur lance a l'ouverture de session Windows (valeur HKCU Run de CE traqueur seulement)
+    try:
+        import acm_veilleur
+        if acm_veilleur.retirer_demarrage_windows(chemin_exe):
+            bilan["veilleur"] = True
+            journal("Veilleur retiré du démarrage de Windows.")
+    except Exception as e:
+        journal(f"Veilleur : démarrage de Windows non modifié ({e})")
     return bilan
 
 
