@@ -39,7 +39,7 @@ BASE_URL = "https://aeroclubmanager.fr/msfs"
 # Tests automatiques uniquement (GitHub Actions) : faux site local sur 127.0.0.1, jamais une autre adresse
 if re.match(r"^http://127\.0\.0\.1:\d+$", os.environ.get("ACM_TRAQUEUR_URL_TEST", "")):
     BASE_URL = os.environ["ACM_TRAQUEUR_URL_TEST"]
-VERSION_ACTUELLE = 19
+VERSION_ACTUELLE = 20
 DOSSIER_TRAQUEUR = os.path.dirname(os.path.abspath(sys.argv[0]))
 CONFIG_PATH = os.path.join(DOSSIER_TRAQUEUR, 'config.json')
 PAGE_INSTALLATION = "https://aeroclubmanager.fr/msfs/installer.php"
@@ -1021,7 +1021,7 @@ def connecter_simconnect():
             tentative += 1
             if tentative == 1:
                 print("⏳ MSFS n'est pas encore lancé (ou pas prêt). En attente...")
-                print("   Laisse cette fenêtre ouverte et lance/termine de charger MSFS 2020 ou 2024.")
+                print("   Laissez cette fenêtre ouverte et lancez Microsoft Flight Simulator 2024 (ou attendez la fin de son chargement).")
             if tentative % 5 == 0:
                 print(f"   [Diagnostic] Tentative {tentative} — erreur : {type(e).__name__}: {e}")
             time.sleep(5)
@@ -1269,6 +1269,9 @@ dernier_check_titre = 0.0
 effets_mission = EffetsMission()
 services_sol = ServicesSol()
 pannes_reelles = PannesReelles()
+# v20 : carburant reel des missions (reservoirs regles au depart, ravitaillement en vol), consignes du site (acm_carburant.py)
+import acm_carburant
+carburant_missions = acm_carburant.Carburant(DOSSIER_TRAQUEUR, journal=print)
 pilotage = Pilotage()
 
 try:
@@ -1441,6 +1444,12 @@ try:
 
             reponse_serveur = None if paquet_incomplet else envoyer_telemetrie_live(status_data)
             pannes_reelles.appliquer(sim, (reponse_serveur or {}).get('pannes'))
+            # v20 : carburant des missions (jamais sur un paquet incomplet ou une position fictive)
+            if reponse_serveur and not position_fictive:
+                try:
+                    carburant_missions.appliquer(aq.get, aq.set, reponse_serveur.get('carburant'), on_ground == 1)
+                except Exception:
+                    pass
             # Demandes du pilote et evenements (camion-citerne, mecano, saut...) : deposes pour AcmPilotage, qui les lit
             # toutes les demi-secondes (reponse en 1 a 2 s au lieu d'attendre qu'il interroge lui-meme le site)
             ambiance = (reponse_serveur or {}).get('ambiance')

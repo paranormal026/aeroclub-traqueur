@@ -6,7 +6,7 @@ name: Installateur AeroClubManager
 on:
   workflow_dispatch:
   push:
-    branches: [installateur, plan-efb, v19]
+    branches: [installateur, plan-efb, v19, ravitailleur]
 
 jobs:
   installateur:
@@ -40,8 +40,11 @@ jobs:
       - name: Tests v19 (dossier MSFS en jonction chiffree, lancement_auto_ignore, delais du veilleur)
         run: python tests/test_v19.py
 
+      - name: Tests v20 (carburant des missions : reservoirs regles au depart, ravitaillement en vol, textes de la console)
+        run: python tests/test_v20.py
+
       - name: Compilation de traqueur.py (verification de syntaxe)
-        run: python -m py_compile traqueur.py acm_installation.py acm_plan_sim.py acm_veilleur.py acm_diag_msfs.py
+        run: python -m py_compile traqueur.py acm_installation.py acm_plan_sim.py acm_veilleur.py acm_diag_msfs.py acm_carburant.py
 
       - name: Construction du veilleur (acm_veilleur.exe, sans console, voix incluses)
         run: pyinstaller --onefile --noconsole --name acm_veilleur --icon installateur/acm.ico --add-data "voix_veilleur;voix_veilleur" --add-binary "SimConnect.dll;." acm_veilleur.py
