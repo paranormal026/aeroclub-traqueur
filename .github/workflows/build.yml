@@ -32,7 +32,7 @@ jobs:
       - name: Tests v19 (dossier MSFS en jonction chiffree, lancement_auto_ignore, delais du veilleur)
         run: python tests/test_v19.py
 
-      - name: Tests v20 (carburant des missions : reservoirs regles au depart, ravitaillement en vol, textes de la console)
+      - name: Tests v20 (carburant des missions, reservoirs regles au depart, ravitaillement en vol, textes de la console)
         run: python tests/test_v20.py
 
       - name: Build veilleur
