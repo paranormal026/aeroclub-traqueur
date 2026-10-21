@@ -1,0 +1,30 @@
+name: Diagnostic dossier MSFS
+
+# Petit exe en LECTURE SEULE (meme Python 3.12 / PyInstaller que traqueur.exe) : ce que voit Python sur le dossier
+# de configuration MSFS d'un PC (jonction LocalCache -> X:\WpSystem\..., dossier chiffre).
+on:
+  workflow_dispatch:
+  push:
+    branches: [v19]
+    paths:
+      - 'acm_diag_msfs.py'
+      - 'acm_installation.py'
+      - '.github/workflows/diag.yml'
+
+jobs:
+  diag:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install pyinstaller
+      - name: Essai sur la machine de test
+        run: python -I acm_diag_msfs.py
+      - name: Construction
+        run: pyinstaller --onefile --name acm_diag_msfs --icon installateur/acm.ico acm_diag_msfs.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: acm-diag-msfs
+          path: dist/acm_diag_msfs.exe

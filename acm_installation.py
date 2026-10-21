@@ -200,58 +200,371 @@ def obtenir_cle(requests_mod, base_url, dossier_app, version, charger_config, sa
     return None
 
 
-# ------------------------------------------------------------------ MSFS et premier contact
-def detecter_msfs():
-    """[(type, dossier)] des installations MSFS trouvees (UserCfg.opt present)."""
+# ------------------------------------------------------------------ dossiers de configuration MSFS (v19, 21/10/2026)
+# Cas reel du 21/10 (PC du proprietaire, MSFS 2024 Microsoft Store installe sur E:) :
+#   %LOCALAPPDATA%\Packages\Microsoft.Limitless_8wekyb3d8bbwe\LocalCache est une JONCTION vers
+#   E:\WpSystem\<SID>\AppData\Local\Packages\Microsoft.Limitless_8wekyb3d8bbwe\LocalCache, dossier CHIFFRE (attribut Encrypted,
+#   « protection d'application »). Le traqueur v18 a juge ce dossier « inexistant » (os.path.isdir faux) alors que l'Explorateur,
+#   PowerShell et node le lisent : la detection echouait, la fenetre de choix s'ouvrait, le pilote designait E:\WindowsApps
+#   (refuse) et la v18 ecrivait « lancement_auto_ignore » : plus de exe.xml, plus de tablette ni de paquets.
+# Desormais un dossier est sonde par TOUTES les methodes (os.path, os.stat, os.listdir, os.scandir, lecture du UserCfg.opt,
+# cible de la jonction par os.readlink / os.path.realpath / _getfinalpathname) et retenu des que l'une d'elles prouve que
+# UserCfg.opt est LISIBLE ; le chemin retenu est celui qui marche aussi avec os.path (sinon la cible de la jonction).
+# Secours : recherche de X:\WpSystem\<SID de l'utilisateur>\...\LocalCache sur tous les disques locaux.
+# Le InstalledPackagesPath du UserCfg.opt ne sert QU'AUX paquets (Community), jamais de dossier de configuration.
+import stat as _stat
+
+PAQUETS_STORE_MSFS = [
+    ("store2024", "Microsoft.Limitless_8wekyb3d8bbwe"),
+    ("store2020", "Microsoft.FlightSimulator_8wekyb3d8bbwe"),
+]
+_DEJA_JOURNALISE = set()
+
+
+def journal_une_fois(journal, texte):
+    """Le diagnostic d'un dossier n'est ecrit qu'une fois par demarrage (dossiers_msfs() est appele 6 fois)."""
+    if journal and texte not in _DEJA_JOURNALISE:
+        _DEJA_JOURNALISE.add(texte)
+        journal(texte)
+
+
+def _sans_prefixe(chemin):
+    """'\\\\?\\E:\\x' -> 'E:\\x' ; '\\\\?\\UNC\\srv\\x' -> '\\\\srv\\x'."""
+    if not isinstance(chemin, str):
+        return chemin
+    if chemin.startswith("\\\\?\\UNC\\"):
+        return "\\\\" + chemin[8:]
+    if chemin.startswith("\\\\?\\") or chemin.startswith("\\??\\"):
+        return chemin[4:]
+    return chemin
+
+
+def _exc(e):
+    return f"{type(e).__name__}: {e}"
+
+
+def cibles_jonction(chemin, notes=None):
+    """Chemins reels d'un dossier (jonction / lien resolu) : os.readlink, os.path.realpath, nt._getfinalpathname.
+    Chaque echec est note (texte exact de l'exception). Ne renvoie que des chemins differents de « chemin »."""
+    notes = notes if notes is not None else []
+    vus = []
+
+    def ajouter(c):
+        c = os.path.normpath(_sans_prefixe(c))
+        if c and not _chemin_egal(c, chemin) and all(not _chemin_egal(c, x) for x in vus):
+            vus.append(c)
+    try:
+        ajouter(os.readlink(chemin))
+    except Exception as e:
+        if not isinstance(e, (OSError, ValueError)) or getattr(e, "winerror", None) not in (4390,):  # 4390 : pas un lien
+            notes.append(f"os.readlink : {_exc(e)}")
+    try:
+        ajouter(os.path.realpath(chemin))
+    except Exception as e:
+        notes.append(f"os.path.realpath : {_exc(e)}")
+    try:
+        import nt  # Windows seulement
+        ajouter(nt._getfinalpathname(chemin))
+    except ImportError:
+        pass
+    except Exception as e:
+        notes.append(f"_getfinalpathname : {_exc(e)}")
+    return vus
+
+
+def _preuves_fichier(fichier, notes):
+    """(present, lisible, os_path_ok) pour un fichier, par toutes les methodes ; notes = exceptions exactes."""
+    present = lisible = os_path_ok = False
+    try:
+        os_path_ok = os.path.isfile(fichier)
+        present = present or os_path_ok
+        if not os_path_ok:
+            notes.append(f"os.path.isfile({fichier}) = False")
+    except Exception as e:
+        notes.append(f"os.path.isfile : {_exc(e)}")
+    try:
+        if _stat.S_ISREG(os.stat(fichier).st_mode):
+            present = True
+    except Exception as e:
+        notes.append(f"os.stat({fichier}) : {_exc(e)}")
+    dossier, nom = os.path.split(fichier)
+    try:
+        if any(n.lower() == nom.lower() for n in os.listdir(dossier)):
+            present = True
+        else:
+            notes.append(f"os.listdir({dossier}) : pas de {nom}")
+    except Exception as e:
+        notes.append(f"os.listdir({dossier}) : {_exc(e)}")
+        try:
+            with os.scandir(dossier) as it:
+                if any(x.name.lower() == nom.lower() for x in it):
+                    present = True
+        except Exception as e2:
+            notes.append(f"os.scandir({dossier}) : {_exc(e2)}")
+    try:
+        with open(fichier, "rb") as f:
+            f.read(64)
+        lisible = present = True
+    except Exception as e:
+        notes.append(f"lecture de {fichier} : {_exc(e)}")
+    return present, lisible, os_path_ok
+
+
+def dossier_existe(chemin):
+    """True si le dossier existe, prouve par n'importe quelle methode (os.path.isdir, os.stat, os.listdir)."""
+    if not isinstance(chemin, str) or not chemin:
+        return False
+    try:
+        if os.path.isdir(chemin):
+            return True
+    except Exception:
+        pass
+    try:
+        if _stat.S_ISDIR(os.stat(chemin).st_mode):
+            return True
+    except Exception:
+        pass
+    try:
+        os.listdir(chemin)
+        return True
+    except Exception:
+        return False
+
+
+def fichier_existe(chemin):
+    """True si le fichier existe, prouve par n'importe quelle methode (os.path.isfile, os.stat, ouverture en lecture).
+    Sert avant de modifier exe.xml : jamais en recreer un vide (et perdre les autres add-ons) parce que os.path s'est trompe."""
+    try:
+        if os.path.isfile(chemin):
+            return True
+    except Exception:
+        pass
+    try:
+        if _stat.S_ISREG(os.stat(chemin).st_mode):
+            return True
+    except Exception:
+        pass
+    try:
+        with open(chemin, "rb"):
+            return True
+    except Exception:
+        return False
+
+
+def chemin_utilisable(chemin):
+    """Le chemin lui-meme si os.path.isdir le voit, sinon sa cible reelle (jonction) si elle, elle est visible ;
+    None si le dossier est introuvable. Sert pour le dossier Community lu dans InstalledPackagesPath."""
+    if not isinstance(chemin, str) or not chemin:
+        return None
+    try:
+        if os.path.isdir(chemin):
+            return chemin
+    except Exception:
+        pass
+    for c in cibles_jonction(chemin):
+        try:
+            if os.path.isdir(c):
+                return c
+        except Exception:
+            pass
+    return chemin if dossier_existe(chemin) else None
+
+
+def sonder_dossier_msfs(dossier):
+    """(chemin_retenu ou None, notes). Retenu des qu'une methode prouve que UserCfg.opt est LISIBLE ; on prefere le chemin
+    d'origine s'il marche aussi avec os.path, puis une cible de jonction qui marche avec os.path, puis n'importe lequel lisible."""
+    notes = []
+    if not isinstance(dossier, str) or not dossier.strip():
+        return None, ["dossier vide"]
+    d = os.path.normpath(dossier)
+    candidats = [d] + cibles_jonction(d, notes)
+    lisibles = []
+    for c in candidats:
+        _present, lisible, os_ok = _preuves_fichier(os.path.join(c, "UserCfg.opt"), notes)
+        if lisible:
+            if os_ok:
+                return c, notes
+            lisibles.append(c)
+    if lisibles:
+        return lisibles[0], notes
+    return None, notes
+
+
+def _sid_utilisateur():
+    """SID de l'utilisateur courant (S-1-5-21-...) : jeton du processus, sinon « whoami /user »."""
+    if os.name != "nt":
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+        a32 = ctypes.WinDLL("advapi32", use_last_error=True)
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.GetCurrentProcess.restype = wintypes.HANDLE
+        a32.OpenProcessToken.argtypes = [wintypes.HANDLE, wintypes.DWORD, ctypes.POINTER(wintypes.HANDLE)]
+        a32.GetTokenInformation.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD,
+                                            ctypes.POINTER(wintypes.DWORD)]
+        a32.ConvertSidToStringSidW.argtypes = [ctypes.c_void_p, ctypes.POINTER(wintypes.LPWSTR)]
+        jeton = wintypes.HANDLE()
+        if a32.OpenProcessToken(k32.GetCurrentProcess(), 0x0008, ctypes.byref(jeton)):   # TOKEN_QUERY
+            try:
+                taille = wintypes.DWORD(0)
+                a32.GetTokenInformation(jeton, 1, None, 0, ctypes.byref(taille))   # TokenUser
+                tampon = ctypes.create_string_buffer(taille.value or 256)
+                if a32.GetTokenInformation(jeton, 1, tampon, len(tampon), ctypes.byref(taille)):
+                    psid = ctypes.cast(tampon, ctypes.POINTER(ctypes.c_void_p))[0]
+                    texte = wintypes.LPWSTR()
+                    if a32.ConvertSidToStringSidW(psid, ctypes.byref(texte)):
+                        sid = texte.value
+                        k32.LocalFree(texte)
+                        if sid:
+                            return sid
+            finally:
+                k32.CloseHandle(jeton)
+    except Exception:
+        pass
+    try:
+        import subprocess
+        sortie = subprocess.run(["whoami", "/user", "/fo", "csv", "/nh"], capture_output=True, text=True,
+                                creationflags=0x08000000, timeout=10).stdout
+        m = re.search(r"S-1-5-21-[\d-]+", sortie or "")
+        return m.group(0) if m else None
+    except Exception:
+        return None
+
+
+def _lecteurs_locaux():
+    """Lettres des disques locaux (fixes et amovibles ; jamais les lecteurs reseau, qui peuvent bloquer)."""
+    if os.name != "nt":
+        return []
+    try:
+        import ctypes
+        k32 = ctypes.windll.kernel32
+        masque = k32.GetLogicalDrives()
+        lettres = []
+        for i in range(26):
+            if masque & (1 << i):
+                lettre = chr(65 + i)
+                if k32.GetDriveTypeW(f"{lettre}:\\") in (2, 3):   # DRIVE_REMOVABLE, DRIVE_FIXED
+                    lettres.append(lettre)
+        return lettres
+    except Exception:
+        return []
+
+
+def emplacements_wpsystem(sid=None, racines=None):
+    """[(type, dossier)] candidats « X:\\WpSystem\\<SID>\\AppData\\Local\\Packages\\<paquet>\\LocalCache » (jeu du Microsoft
+    Store installe sur un autre disque). racines : dossiers WpSystem a examiner (tests) ; par defaut X:\\WpSystem de chaque
+    disque local. Sans SID connu, un seul profil present est accepte (jamais celui d'un autre utilisateur au hasard)."""
+    if racines is None:
+        racines = [f"{l}:\\WpSystem" for l in _lecteurs_locaux() if l != "A"]
     trouves = []
-    for nature, modele in EMPLACEMENTS_MSFS:
-        dossier = os.path.expandvars(modele)
-        if os.path.isfile(os.path.join(dossier, "UserCfg.opt")):
-            trouves.append((nature, dossier))
+    for racine in racines:
+        if not dossier_existe(racine):
+            continue
+        if sid:
+            profils = [sid]
+        else:
+            try:
+                profils = [n for n in os.listdir(racine) if n.startswith("S-1-5-21-")]
+            except Exception:
+                profils = []
+            if len(profils) != 1:
+                continue
+        for p in profils:
+            for nature, paquet in PAQUETS_STORE_MSFS:
+                trouves.append((nature, os.path.join(racine, p, "AppData", "Local", "Packages", paquet, "LocalCache")))
     return trouves
 
 
-# ------------------------------------------------------------------ dossiers de configuration MSFS (v18, 21/10/2026)
-# Cas reel du 21/10 : config.json contenait « E:\WindowsApps\Microsoft.Limitless_... » (dossier du JEU, en lecture seule).
-# Seule source possible dans le code : l'ancienne fenetre de choix du dossier (demander_dossier_msfs) qui gardait « quand meme »
-# un dossier sans UserCfg.opt ; le chemin restait ensuite dans config.json et servait a chaque demarrage (exe.xml, paquets)
-# sans jamais etre reverifie. Desormais un dossier n'est retenu que s'il contient UserCfg.opt et n'est pas sous WindowsApps.
-def dossier_msfs_refus(dossier):
-    """None si le dossier est un vrai dossier de configuration MSFS, sinon la raison du refus (texte pour le pilote)."""
+def _identite(chemin):
+    try:
+        st = os.stat(chemin)
+        if st.st_ino:
+            return ("ino", st.st_dev, st.st_ino)
+    except Exception:
+        pass
+    try:
+        return ("chemin", os.path.normcase(os.path.realpath(chemin)))
+    except Exception:
+        return ("chemin", os.path.normcase(os.path.normpath(chemin)))
+
+
+def meme_dossier(a, b):
+    """Meme dossier physique (la jonction LocalCache et sa cible E:\\WpSystem\\... comptent pour un)."""
+    return _chemin_egal(a, b) or _identite(a) == _identite(b)
+
+
+def detecter_msfs(journal=None, wpsystem=None, emplacements=None):
+    """[(type, dossier)] des installations MSFS trouvees (UserCfg.opt lisible). Emplacements officiels d'abord, puis
+    X:\\WpSystem\\<SID>\\... sur tous les disques locaux. journal : diagnostic ecrit si un emplacement existe mais n'est pas
+    lisible (textes exacts des exceptions)."""
+    emplacements = emplacements if emplacements is not None else [(n, os.path.expandvars(m)) for n, m in EMPLACEMENTS_MSFS]
+    if wpsystem is None:
+        wpsystem = emplacements_wpsystem(_sid_utilisateur())
+    trouves = []
+    for nature, dossier in list(emplacements) + list(wpsystem):
+        retenu, notes = sonder_dossier_msfs(dossier)
+        if retenu:
+            if all(not meme_dossier(retenu, x) for _n, x in trouves):
+                trouves.append((nature, retenu))
+                if not _chemin_egal(retenu, dossier) or notes:
+                    journal_une_fois(journal, f"Dossier MSFS trouvé : {retenu} (pour {dossier}). Détails : {' | '.join(notes)}")
+        elif journal:
+            existe = False
+            try:
+                os.lstat(dossier)
+                existe = True
+            except Exception:
+                existe = dossier_existe(dossier)
+            if existe:   # un emplacement present mais illisible : c'est un vrai probleme, on garde la trace exacte
+                journal_une_fois(journal, f"Dossier MSFS présent mais UserCfg.opt illisible : {dossier}. Détails : {' | '.join(notes)}")
+    return trouves
+
+
+def dossier_msfs_retenu(dossier):
+    """(chemin a utiliser, None) si le dossier est un vrai dossier de configuration MSFS, sinon (None, raison)."""
     if not isinstance(dossier, str) or not dossier.strip():
-        return "dossier vide"
+        return None, "dossier vide"
     d = os.path.normpath(dossier)
     morceaux = [m.lower() for m in re.split(r"[\\/]+", d) if m]
     if "windowsapps" in morceaux:
-        return "c'est le dossier d'installation du jeu (WindowsApps, en lecture seule), pas son dossier de configuration"
-    if not os.path.isdir(d):
-        return "ce dossier n'existe pas"
-    if not os.path.isfile(os.path.join(d, "UserCfg.opt")):
-        return "ce dossier ne contient pas le fichier UserCfg.opt"
-    return None
+        return None, "c'est le dossier d'installation du jeu (WindowsApps, en lecture seule), pas son dossier de configuration"
+    retenu, notes = sonder_dossier_msfs(d)
+    if retenu:
+        return retenu, None
+    details = f" ; détails : {' | '.join(notes)}" if notes else ""
+    if dossier_existe(d) or any(dossier_existe(c) for c in cibles_jonction(d)):
+        return None, "ce dossier ne contient pas le fichier UserCfg.opt (ou il est illisible)" + details
+    return None, "ce dossier n'existe pas" + details
+
+
+def dossier_msfs_refus(dossier):
+    """None si le dossier est un vrai dossier de configuration MSFS, sinon la raison du refus (texte pour le pilote)."""
+    return dossier_msfs_retenu(dossier)[1]
 
 
 def dossiers_msfs_valides(cfg, detecter=None, journal=None):
     """Dossiers MSFS a utiliser : ceux du config.json qui sont valables, sinon ceux trouves automatiquement.
-    Corrige cfg['dossiers_msfs'] en place ; renvoie (dossiers, change) ; change = True s'il faut sauver config.json."""
-    detecter = detecter or (lambda: [d for _n, d in detecter_msfs()])
+    Corrige cfg['dossiers_msfs'] en place (et retire un ancien « lancement_auto_ignore » des qu'un dossier est trouve) ;
+    renvoie (dossiers, change) ; change = True s'il faut sauver config.json."""
+    detecter = detecter or (lambda: [d for _n, d in detecter_msfs(journal=journal)])
     stockes = cfg.get("dossiers_msfs", [])
     if not isinstance(stockes, list):
         stockes = []
     bons, refuses = [], []
     for d in stockes:
-        raison = dossier_msfs_refus(d)
+        retenu, raison = dossier_msfs_retenu(d)
         if raison:
             refuses.append((d, raison))
-        elif all(not _chemin_egal(d, x) for x in bons):
-            bons.append(os.path.normpath(d))
+        elif all(not meme_dossier(retenu, x) for x in bons):
+            bons.append(os.path.normpath(retenu))
     for d, raison in refuses:
-        if journal:
-            journal(f"Dossier MSFS ignoré : {d} ({raison}).")
+        journal_une_fois(journal, f"Dossier MSFS ignoré : {d} ({raison}).")
     if not bons:
         for d in detecter():
-            if not dossier_msfs_refus(d) and all(not _chemin_egal(d, x) for x in bons):
-                bons.append(os.path.normpath(d))
+            retenu, _r = dossier_msfs_retenu(d)
+            if retenu and all(not meme_dossier(retenu, x) for x in bons):
+                bons.append(os.path.normpath(retenu))
     avant = [os.path.normpath(x) for x in stockes if isinstance(x, str)]
     change = avant != bons or ("dossiers_msfs" in cfg and not bons)
     if change:
@@ -259,6 +572,11 @@ def dossiers_msfs_valides(cfg, detecter=None, journal=None):
             cfg["dossiers_msfs"] = bons
         else:
             cfg.pop("dossiers_msfs", None)
+    if bons and "lancement_auto_ignore" in cfg:
+        # v17/v18 l'ecrivaient des que le pilote annulait la fenetre (ou que la detection echouait) : plus jamais bloquant
+        cfg.pop("lancement_auto_ignore", None)
+        change = True
+        journal_une_fois(journal, "Ancien réglage « lancement_auto_ignore » retiré : le dossier MSFS est trouvé.")
     return bons, change
 
 
@@ -329,7 +647,7 @@ def retirer_de_exe_xml(dossier_msfs, chemin_exe, nom_addon="AeroClubManager Traq
     Renvoie True si le fichier a ete modifie."""
     import xml.etree.ElementTree as ET
     exe_xml = os.path.join(dossier_msfs, "exe.xml")
-    if not os.path.isfile(exe_xml):
+    if not fichier_existe(exe_xml):
         return False
     arbre = ET.parse(exe_xml)
     racine = arbre.getroot()
@@ -366,9 +684,13 @@ def desinstaller(dossier_app, chemin_exe, journal=_dire):
         except Exception as e:
             bilan["paquets_echec"].append(cible)
             journal(f"Impossible de retirer {cible} ({e}) : fermez le simulateur puis supprimez-le à la main.")
-    dossiers = [d for d in cfg.get("dossiers_msfs", []) if not dossier_msfs_refus(d)]
+    dossiers = []
+    for d in cfg.get("dossiers_msfs", []) if isinstance(cfg.get("dossiers_msfs"), list) else []:
+        retenu, _raison = dossier_msfs_retenu(d)
+        if retenu and all(not meme_dossier(retenu, x) for x in dossiers):
+            dossiers.append(retenu)
     for _n, d in detecter_msfs():
-        if all(not _chemin_egal(d, x) for x in dossiers):
+        if all(not meme_dossier(d, x) for x in dossiers):
             dossiers.append(d)
     for d in dossiers:
         try:
