@@ -421,7 +421,9 @@ def dossier_community(dossier_msfs):
                     chemin = ligne[len("InstalledPackagesPath"):].strip().strip('"')
                     # v19 : chemin officiel du UserCfg.opt, seulement pour les paquets ; s'il passe par une jonction que
                     # Python voit mal, on prend sa cible reelle
-                    return acm_installation.chemin_utilisable(os.path.join(chemin, "Community"))
+                    # v22 : aussi quand un dossier parent est une jonction que ce processus ne peut pas traverser
+                    # (WinError 448 : traqueur lance par l'installateur) -> cible de la jonction, ou dossier MSFS connu
+                    return acm_installation.chemin_utilisable(os.path.join(chemin, "Community"), dossiers_connus=[dossier_msfs])
     except Exception:
         pass
     return None
