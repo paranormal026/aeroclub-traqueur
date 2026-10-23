@@ -553,7 +553,7 @@ def installer_app_efb():
     # v21 : jamais pendant que le simulateur tourne (la tablette disparaissait jusqu'au redemarrage)
     if reporter_si_msfs_ouvert("tablette", installer_app_efb,
                                message_attente("de la tablette", version) if a_faire else
-                               "⏳ La clé de la tablette doit être mise à jour : fermez le simulateur puis relancez le traqueur.")):
+                               "⏳ La clé de la tablette doit être mise à jour : fermez le simulateur puis relancez le traqueur."):
         return
     for communaute in cles_a_corriger:
         with open(os.path.join(communaute, NOM_PAQUET_EFB, *DOSSIER_APP_EFB, "config.json"), "w", encoding="utf-8") as f:
