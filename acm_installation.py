@@ -351,9 +351,60 @@ def fichier_existe(chemin):
         return False
 
 
-def chemin_utilisable(chemin):
+def cibles_par_parents(chemin):
+    """v22 : chemins equivalents quand c'est un dossier PARENT qui est une jonction (ex. ...\\LocalCache -> E:\\WpSystem\\...) :
+    cible du parent + reste du chemin. os.readlink lit la jonction elle-meme sans la traverser, ce qui marche encore quand
+    le processus refuse de la traverser (WinError 448 « point de montage non approuve », traqueur lance par l'installateur)."""
+    res = []
+    if not isinstance(chemin, str) or not chemin:
+        return res
+    tete, reste = os.path.normpath(chemin), []
+    while True:
+        parent, nom = os.path.split(tete)
+        if not nom or not parent or _chemin_egal(parent, tete):
+            break
+        reste.insert(0, nom)
+        tete = parent
+        try:
+            cible = _sans_prefixe(os.readlink(tete))   # pas un lien : OSError 4390, on remonte
+            if not os.path.isabs(cible):   # lien symbolique relatif
+                cible = os.path.join(os.path.dirname(tete), cible)
+            cible = os.path.normpath(cible)
+        except Exception:
+            continue
+        if cible and not _chemin_egal(cible, tete):
+            c = os.path.join(cible, *reste)
+            if all(not _chemin_egal(c, x) for x in res):
+                res.append(c)
+    return res
+
+
+def cibles_par_dossiers_connus(chemin, dossiers_connus):
+    """v22 : « C:\\...\\Microsoft.Limitless_8wekyb3d8bbwe\\LocalCache\\Packages\\Community » quand le dossier MSFS connu est
+    « E:\\WpSystem\\<SID>\\...\\Microsoft.Limitless_8wekyb3d8bbwe\\LocalCache » : meme fin de chemin, autre debut."""
+    res = []
+    if not isinstance(chemin, str) or not chemin:
+        return res
+    morceaux = os.path.normpath(chemin).split(os.sep)
+    for d in dossiers_connus or ():
+        if not isinstance(d, str) or not d:
+            continue
+        d = os.path.normpath(_sans_prefixe(d))
+        nom, parent = os.path.basename(d).lower(), os.path.basename(os.path.dirname(d)).lower()
+        for i in range(len(morceaux) - 1, 0, -1):
+            if morceaux[i].lower() == nom and morceaux[i - 1].lower() == parent:
+                c = os.path.join(d, *morceaux[i + 1:])
+                if not _chemin_egal(c, chemin) and all(not _chemin_egal(c, x) for x in res):
+                    res.append(c)
+                break
+    return res
+
+
+def chemin_utilisable(chemin, dossiers_connus=()):
     """Le chemin lui-meme si os.path.isdir le voit, sinon sa cible reelle (jonction) si elle, elle est visible ;
-    None si le dossier est introuvable. Sert pour le dossier Community lu dans InstalledPackagesPath."""
+    None si le dossier est introuvable. Sert pour le dossier Community lu dans InstalledPackagesPath.
+    v22 : aussi quand c'est un dossier PARENT qui est une jonction non traversable (WinError 448, 23/10 : traqueur lance par
+    l'installateur, tablette jamais installee), puis par le dossier MSFS deja connu (« dossiers_connus »)."""
     if not isinstance(chemin, str) or not chemin:
         return None
     try:
@@ -367,7 +418,15 @@ def chemin_utilisable(chemin):
                 return c
         except Exception:
             pass
-    return chemin if dossier_existe(chemin) else None
+    if dossier_existe(chemin):
+        return chemin
+    for c in cibles_par_parents(chemin) + cibles_par_dossiers_connus(chemin, dossiers_connus):
+        try:
+            if os.path.isdir(c) or dossier_existe(c):
+                return c
+        except Exception:
+            pass
+    return None
 
 
 def sonder_dossier_msfs(dossier):

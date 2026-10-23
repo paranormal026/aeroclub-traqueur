@@ -6,7 +6,7 @@ name: Installateur AeroClubManager
 on:
   workflow_dispatch:
   push:
-    branches: [installateur, plan-efb, v19, ravitailleur, v21]
+    branches: [installateur, plan-efb, v19, ravitailleur, v21, v22]
 
 jobs:
   installateur:
@@ -45,6 +45,9 @@ jobs:
 
       - name: Tests v21 (aucun paquet ni programme remplace pendant que le simulateur tourne, mise a jour en attente)
         run: python tests/test_v21.py
+
+      - name: Tests v22 (tablette jamais oubliee - jonction non traversable, simulateur qui se ferme, connexion bloquee, nouveaux essais)
+        run: python tests/test_v22.py
 
       - name: Compilation de traqueur.py (verification de syntaxe)
         run: python -m py_compile traqueur.py acm_installation.py acm_plan_sim.py acm_veilleur.py acm_diag_msfs.py acm_carburant.py

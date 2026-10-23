@@ -35,8 +35,9 @@ FONCTIONS = ["regenerer_layout", "reporter_maj", "reporter_si_msfs_ouvert", "mes
              "programmes_sol_en_cours", "installer_services_sol"]
 VARIABLES = ["MAJ_EN_ATTENTE", "_MAJ_REPORTEES", "_MAJ_ESSAI", "NOM_PAQUET_EFB", "DOSSIER_APP_EFB", "NOM_PAQUET_FX",
              "NOM_PAQUET_PERSOS", "NOM_PAQUET_ACM400"]
-TEXTE_TABLETTE = ("Une nouvelle version de la tablette (2.0.0) est prête : fermez le simulateur puis relancez le traqueur "
-                  "pour l'installer.")
+# v22 : plus besoin de relancer le traqueur (installation automatique a la fermeture du simulateur)
+TEXTE_TABLETTE = ("Une nouvelle version de la tablette (2.0.0) est prête : elle s'installera dès que vous fermerez le "
+                  "simulateur (laissez le traqueur ouvert).")
 
 
 def dossier_essai():
@@ -184,7 +185,7 @@ class TestSimulateurOuvert(Base):
         self.assertEqual(set(self.e["MAJ_EN_ATTENTE"]), {"tablette", "effets", "personnages", "avions", "services au sol"})
         texte = "\n".join(self.messages)
         self.assertIn(TEXTE_TABLETTE, texte)
-        self.assertIn("des personnages et véhicules (1.70.0) est prête : fermez le simulateur puis relancez le traqueur", texte)
+        self.assertIn("des personnages et véhicules (1.70.0) est prête : elle s'installera dès que vous fermerez le simulateur", texte)
         self.assertNotIn("Téléchargement", texte)
 
     def test_message_une_seule_fois(self):
@@ -265,8 +266,10 @@ class TestFermetureDuSimulateur(Base):
         self.assertEqual(self.app_efb(), "// v2.0.0")
         self.assertIn("1.70.0", self.lire(self.community, "aeroclubmanager-persos", "manifest.json"))
         texte = "\n".join(self.messages)
-        self.assertIn("Simulateur fermé : installation des mises à jour en attente", texte)
-        self.assertIn("Mises à jour installées", texte)
+        # v22 : une ligne par mise a jour, avec sa version
+        self.assertIn("🔧 Simulateur fermé : installation de la tablette 2.0.0…", texte)
+        self.assertIn("✅ Installation de la tablette 2.0.0 terminée", texte)
+        self.assertIn("✅ Installation des personnages et véhicules 1.70.0 terminée", texte)
         # plus rien en attente : plus aucun essai
         self.site.appels.clear()
         self.assertEqual(self.e["installer_maj_en_attente"](intervalle=0), 0)
@@ -291,10 +294,11 @@ class TestFermetureDuSimulateur(Base):
         self.assertNotIn("persos_installe", self.cfg)
 
     def test_erreur_pendant_l_essai(self):
+        # v22 : une erreur ne fait plus abandonner la mise a jour : elle reste en attente et sera refaite
         self.e["MAJ_EN_ATTENTE"]["tablette"] = lambda: 1 / 0
         self.assertEqual(self.e["installer_maj_en_attente"](intervalle=0), 1)
-        self.assertEqual(self.e["MAJ_EN_ATTENTE"], {})
-        self.assertTrue(any("prochain démarrage du traqueur" in m for m in self.messages))
+        self.assertIn("tablette", self.e["MAJ_EN_ATTENTE"])
+        self.assertTrue(any("nouvel essai automatique" in m for m in self.messages))
 
 
 class TestServicesSol(Base):
@@ -334,7 +338,7 @@ class TestServicesSol(Base):
 
 class TestTraqueurSource(unittest.TestCase):
     def test_version_et_textes(self):
-        self.assertEqual(int(re.search(r"^VERSION_ACTUELLE = (\d+)", SOURCE, re.M).group(1)), 21)
+        self.assertGreaterEqual(int(re.search(r"^VERSION_ACTUELLE = (\d+)", SOURCE, re.M).group(1)), 21)
         self.assertNotIn("100 Mo", SOURCE)
         self.assertIn("environ 1,1 Go — patientez", SOURCE)
         self.assertNotIn("fermez MSFS puis", SOURCE)
@@ -343,9 +347,9 @@ class TestTraqueurSource(unittest.TestCase):
     def test_branchements(self):
         arbre = ast.parse(SOURCE)
         connecter = [n for n in arbre.body if isinstance(n, ast.FunctionDef) and n.name == "connecter_simconnect"][0]
-        self.assertIn("installer_maj_en_attente()", ast.get_source_segment(SOURCE, connecter))
+        self.assertIn("installer_maj_en_attente(", ast.get_source_segment(SOURCE, connecter))
         boucle = SOURCE[SOURCE.index("sim, aq = connecter_simconnect()\n"):]
-        self.assertIn("installer_maj_en_attente()", boucle)
+        self.assertIn("installer_maj_en_attente(", boucle)
         # chaque installateur de paquet passe par le controle du simulateur ouvert
         for nom in ("installer_app_efb", "installer_effets_mission", "installer_personnages", "installer_avions_acm"):
             f = [n for n in arbre.body if isinstance(n, ast.FunctionDef) and n.name == nom][0]

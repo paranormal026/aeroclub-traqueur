@@ -39,7 +39,7 @@ BASE_URL = "https://aeroclubmanager.fr/msfs"
 # Tests automatiques uniquement (GitHub Actions) : faux site local sur 127.0.0.1, jamais une autre adresse
 if re.match(r"^http://127\.0\.0\.1:\d+$", os.environ.get("ACM_TRAQUEUR_URL_TEST", "")):
     BASE_URL = os.environ["ACM_TRAQUEUR_URL_TEST"]
-VERSION_ACTUELLE = 21
+VERSION_ACTUELLE = 22
 DOSSIER_TRAQUEUR = os.path.dirname(os.path.abspath(sys.argv[0]))
 CONFIG_PATH = os.path.join(DOSSIER_TRAQUEUR, 'config.json')
 PAGE_INSTALLATION = "https://aeroclubmanager.fr/msfs/installer.php"
@@ -460,57 +460,208 @@ def msfs_ouvert():
 # ferme (traqueur toujours ouvert) ou au prochain demarrage du traqueur. (23/10 : tablette remplacee en plein vol, disparue.)
 MAJ_EN_ATTENTE = {}   # nom -> fonction d'installation a relancer
 _MAJ_REPORTEES = set()   # mises a jour remises en attente pendant l'essai en cours
-_MAJ_ESSAI = {"dernier": 0.0, "annonce": False}
+# v22 : « infos » nom -> (quoi, version) pour des messages precis ; « annoncees » : « 🔧 ... » deja affiche ;
+# « echecs » nom -> (nombre, prochain essai) : une erreur ne fait plus abandonner la mise a jour, elle est refaite plus tard
+_MAJ_ESSAI = {"dernier": 0.0, "annonce": False, "infos": {}, "annoncees": set(), "echecs": {}}
 
 
-def reporter_maj(nom, fonction, message):
+def reporter_maj(nom, fonction, message, quoi=None, version=None):
     """Met la mise a jour de cote (une seule fois le message, console + journal)."""
     if nom not in MAJ_EN_ATTENTE:
         journal(message)
     MAJ_EN_ATTENTE[nom] = fonction
+    if quoi:
+        _MAJ_ESSAI["infos"][nom] = (quoi, version)
     _MAJ_REPORTEES.add(nom)
 
 
-def reporter_si_msfs_ouvert(nom, fonction, message):
+def reporter_si_msfs_ouvert(nom, fonction, message, quoi=None, version=None):
     """Vrai si le simulateur est ouvert : rien n'est touche, la mise a jour attend sa fermeture."""
     if not msfs_ouvert():
         return False
-    reporter_maj(nom, fonction, message)
+    reporter_maj(nom, fonction, message, quoi, version)
     return True
 
 
 def message_attente(quoi, version):
-    return f"⏳ Une nouvelle version {quoi} ({version}) est prête : fermez le simulateur puis relancez le traqueur pour l'installer."
+    return (f"⏳ Une nouvelle version {quoi} ({version}) est prête : elle s'installera dès que vous fermerez le simulateur "
+            f"(laissez le traqueur ouvert).")
 
 
 def installer_maj_en_attente(intervalle=30):
     """Appelee souvent (boucle principale, attente du simulateur) ; au plus un essai toutes les « intervalle » secondes.
-    Simulateur ferme : installe les mises a jour mises de cote, avant son prochain lancement. Renvoie le nombre tente."""
+    Simulateur ferme : installe les mises a jour mises de cote, avant son prochain lancement. Renvoie le nombre tente.
+    v22 : une mise a jour qui echoue (site injoignable, dossier Community illisible...) ou qui renvoie False reste en
+    attente et est refaite (30 s, puis de plus en plus espace, 10 min au plus) : plus jamais abandonnee en silence."""
     if not MAJ_EN_ATTENTE or time.time() - _MAJ_ESSAI["dernier"] < intervalle:
         return 0
     _MAJ_ESSAI["dernier"] = time.time()
     if msfs_ouvert():
         _MAJ_ESSAI["annonce"] = False
         return 0
-    if not _MAJ_ESSAI["annonce"]:
-        _MAJ_ESSAI["annonce"] = True
-        journal("🔧 Simulateur fermé : installation des mises à jour en attente, patientez avant de le relancer...")
     faites = 0
     for nom, fonction in list(MAJ_EN_ATTENTE.items()):
+        nb_echecs, prochain = _MAJ_ESSAI["echecs"].get(nom, (0, 0.0))
+        if time.time() < prochain:
+            continue
+        quoi, version = _MAJ_ESSAI["infos"].get(nom, (None, None))
+        etiquette = (f"{quoi} {version}" if version else quoi) if quoi else f"« {nom} »"
+        if nom not in _MAJ_ESSAI["annoncees"]:
+            _MAJ_ESSAI["annoncees"].add(nom)
+            journal(f"🔧 Simulateur fermé : installation {etiquette}… (patientez avant de le relancer)")
         _MAJ_REPORTEES.discard(nom)
         faites += 1
         try:
-            fonction()
+            resultat = fonction()
         except Exception as e:
-            journal(f"⚠️ Mise à jour « {nom} » impossible ({e}) : nouvel essai au prochain démarrage du traqueur.")
-            _MAJ_REPORTEES.discard(nom)
-            MAJ_EN_ATTENTE.pop(nom, None)
+            resultat, erreur = False, e
+        else:
+            erreur = None
+        if resultat is False:
+            nb_echecs += 1
+            delai = min(600, 30 * 2 ** min(nb_echecs - 1, 5))
+            _MAJ_ESSAI["echecs"][nom] = (nb_echecs, time.time() + delai)
+            if erreur is not None or nb_echecs == 1:
+                raison = f" ({erreur})" if erreur is not None else ""
+                journal(f"⚠️ Installation {etiquette} impossible pour l'instant{raison} : nouvel essai automatique dans "
+                        f"{delai} s.")
             continue
-        if nom not in _MAJ_REPORTEES:   # faite (ou plus rien a faire) ; sinon toujours en attente, sans nouveau message
-            MAJ_EN_ATTENTE.pop(nom, None)
-    if faites and not MAJ_EN_ATTENTE:
-        journal("✅ Mises à jour installées : elles seront visibles au prochain démarrage du simulateur.")
+        if nom in _MAJ_REPORTEES:   # remise en attente (simulateur rouvert pendant le telechargement...) : sans message
+            _MAJ_ESSAI["annoncees"].discard(nom)
+            continue
+        MAJ_EN_ATTENTE.pop(nom, None)
+        _MAJ_ESSAI["infos"].pop(nom, None)
+        _MAJ_ESSAI["echecs"].pop(nom, None)
+        _MAJ_ESSAI["annoncees"].discard(nom)
+        journal(f"✅ Installation {etiquette} terminée : prise en compte au prochain démarrage du simulateur.")
     return faites
+
+
+def lancer_installation(nom, fonction, quoi):
+    """v22 : installation au demarrage du traqueur. Si elle n'a pas pu se faire (False : site injoignable, dossier Community
+    illisible... ; ou erreur), elle est mise en attente et refaite automatiquement, au lieu d'etre oubliee jusqu'au
+    prochain demarrage."""
+    try:
+        resultat = fonction()
+        erreur = None
+    except Exception as e:
+        resultat, erreur = False, e
+    if resultat is False:
+        raison = f" ({erreur})" if erreur is not None else ""
+        reporter_maj(nom, fonction, f"⚠️ Installation {quoi} impossible pour l'instant{raison} : nouvel essai automatique "
+                                    f"dans 30 s (le traqueur fonctionne normalement).", quoi)
+        _MAJ_ESSAI["echecs"][nom] = (1, time.time() + 30)
+    return resultat
+
+
+def community_introuvable(dossiers):
+    """v22 : False (a refaire) si le simulateur est trouve mais pas son dossier Community ; None si aucun simulateur."""
+    if not dossiers:
+        return None
+    acm_installation.journal_une_fois(journal, "⚠️ Dossier Community du simulateur introuvable pour l'instant (dossiers : "
+                                      + ", ".join(dossiers) + ") : la tablette et les paquets AeroClubManager seront "
+                                      "installés dès qu'il sera lisible.")
+    return False
+
+
+def pids_simulateur():
+    """PID des processus FlightSimulator2024.exe (vide si aucun)."""
+    try:
+        import subprocess
+        sortie = subprocess.run(["tasklist", "/FO", "CSV", "/NH", "/FI", "IMAGENAME eq FlightSimulator2024.exe"],
+                                capture_output=True, text=True, creationflags=0x08000000).stdout
+    except Exception:
+        return []
+    pids = []
+    for ligne in sortie.splitlines():
+        champs = [c.strip().strip('"') for c in ligne.split('","')]
+        if len(champs) > 1 and champs[0].lower() == "flightsimulator2024.exe" and champs[1].isdigit():
+            pids.append(int(champs[1]))
+    return pids
+
+
+def fenetre_simulateur_visible(pids=None):
+    """Vrai si un processus du simulateur a une fenetre visible (en marche ou en chargement) ; faux s'il n'en a plus aucune
+    (il est en train de se fermer : la fenetre disparait d'abord, le processus reste encore plusieurs secondes)."""
+    pids = set(pids_simulateur() if pids is None else pids)
+    if not pids:
+        return False
+    try:
+        import ctypes
+        from ctypes import wintypes
+        user32 = ctypes.windll.user32
+        trouve = []
+
+        @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+        def chaque(hwnd, _l):
+            pid = wintypes.DWORD()
+            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+            if pid.value in pids and user32.IsWindowVisible(hwnd):
+                trouve.append(hwnd)
+                return False
+            return True
+        user32.EnumWindows(chaque, 0)
+        return bool(trouve)
+    except Exception:
+        return True   # dans le doute : simulateur considere comme ouvert (rien n'est remplace)
+
+
+def attendre_fermeture_simulateur(delai=60, pas=2):
+    """v22 : au demarrage, le simulateur peut etre EN TRAIN de se fermer (processus encore la, plus de fenetre) : on attend
+    jusqu'a « delai » secondes qu'il disparaisse avant de decider d'installer ou de reporter les mises a jour. S'il a une
+    fenetre (vraiment ouvert, ou en chargement), on n'attend pas. Renvoie True si le simulateur est ferme a la fin."""
+    if not msfs_ouvert():
+        return True
+    if fenetre_simulateur_visible():
+        return False
+    print(f"⏳ Le simulateur est en train de se fermer : attente de sa fermeture complète ({delai} s au plus) "
+          f"avant de vérifier les mises à jour...")
+    debut = time.time()
+    while time.time() - debut < delai:
+        time.sleep(pas)
+        if not msfs_ouvert():
+            print("✅ Simulateur fermé : vérification des mises à jour.")
+            return True
+        if fenetre_simulateur_visible():
+            return False   # il a ete relance : les mises a jour attendront sa fermeture
+    return not msfs_ouvert()
+
+
+DELAI_SIMCONNECT = 20.0   # v22 : reponse du simulateur attendue au plus 20 s par essai de connexion
+
+
+def ouvrir_simconnect(classe, delai=20.0):
+    """v22 : connexion SimConnect qui ne peut plus bloquer le traqueur. La bibliotheque attend la reponse du simulateur
+    dans une boucle sans fin (« while self.ok is False ») : si le simulateur se ferme (ou se bloque) pendant la connexion,
+    le traqueur restait fige, sans plus jamais installer les mises a jour en attente. Ici la connexion se fait dans un fil
+    a part ; sans reponse apres « delai » secondes, elle est abandonnee proprement et une erreur est levee."""
+    import threading
+    sim = classe(auto_connect=False)
+    erreurs = []
+
+    def connexion():
+        try:
+            sim.connect()
+        except Exception as e:
+            erreurs.append(e)
+    fil = threading.Thread(target=connexion, daemon=True)
+    fil.start()
+    fil.join(delai)
+    if erreurs:
+        raise erreurs[0]
+    if fil.is_alive() or getattr(sim, "ok", False) is not True:
+        sim.ok = None     # fait sortir la boucle d'attente de la bibliotheque
+        sim.quit = 1      # arrete son fil de lecture
+        fil.join(2)
+        try:
+            minuteur = getattr(sim, "timerThread", None)
+            if minuteur is not None:
+                minuteur.join(2)
+            sim.dll.Close(sim.hSimConnect)
+        except Exception:
+            pass
+        raise ConnectionError(f"le simulateur n'a pas répondu en {int(delai)} s (fermeture ou chargement en cours)")
+    return sim
 
 
 def installer_app_efb():
@@ -525,7 +676,7 @@ def installer_app_efb():
     dossiers = dossiers_msfs(cfg)   # v18 : dossiers verifies (UserCfg.opt, jamais WindowsApps)
     communautes = [c for c in (dossier_community(d) for d in dossiers) if c]
     if not communautes:
-        return
+        return community_introuvable(dossiers)   # v22 : simulateur trouve mais Community illisible -> a refaire
     # La cle de la tablette suit celle du traqueur (compte recree, cle regeneree) : corrigee a chaque demarrage
     cles_a_corriger = []
     for communaute in communautes:
@@ -543,6 +694,8 @@ def installer_app_efb():
         version = requests.get(f"{BASE_URL}/api_efb.php", params={"action": "package_info", "api_token": API_TOKEN}, timeout=10).json().get("version")
     except Exception:
         version = None
+        if not cles_a_corriger:
+            return False   # v22 : site injoignable -> nouvel essai automatique
 
     installe = cfg.get('efb_installe', {})
     a_faire = [c for c in communautes
@@ -553,7 +706,9 @@ def installer_app_efb():
     # v21 : jamais pendant que le simulateur tourne (la tablette disparaissait jusqu'au redemarrage)
     if reporter_si_msfs_ouvert("tablette", installer_app_efb,
                                message_attente("de la tablette", version) if a_faire else
-                               "⏳ La clé de la tablette doit être mise à jour : fermez le simulateur puis relancez le traqueur."):
+                               "⏳ La clé de la tablette doit être mise à jour : elle le sera dès que vous fermerez le simulateur "
+                               "(laissez le traqueur ouvert).",
+                               "de la tablette" if a_faire else "de la clé de la tablette", version if a_faire else None):
         return
     for communaute in cles_a_corriger:
         with open(os.path.join(communaute, NOM_PAQUET_EFB, *DOSSIER_APP_EFB, "config.json"), "w", encoding="utf-8") as f:
@@ -566,7 +721,7 @@ def installer_app_efb():
     print(f"📲 Installation de l'app AeroClubManager dans la tablette EFB de MSFS (version {version})...")
     r = requests.get(f"{BASE_URL}/api_efb.php", params={"action": "package", "api_token": API_TOKEN}, timeout=60)
     r.raise_for_status()
-    if reporter_si_msfs_ouvert("tablette", installer_app_efb, message_attente("de la tablette", version)):
+    if reporter_si_msfs_ouvert("tablette", installer_app_efb, message_attente("de la tablette", version), "de la tablette", version):
         return   # simulateur ouvert pendant le telechargement
     tmp = tempfile.mkdtemp(prefix="acm_efb_")
     try:
@@ -588,10 +743,14 @@ def installer_app_efb():
     sauver_config(cfg)
 
 
-try:
-    installer_app_efb()
-except Exception as e:
-    print(f"⚠️ Installation de l'app EFB impossible ({e}). Le traqueur fonctionne normalement.")
+# v22 : simulateur en train de se fermer au lancement du traqueur : on attend la fin (60 s au plus) avant de decider
+if getattr(sys, 'frozen', False):
+    try:
+        attendre_fermeture_simulateur()
+    except Exception:
+        pass
+# v22 : une installation impossible pour l'instant (site injoignable, dossier illisible, erreur) est refaite toute seule
+lancer_installation("tablette", installer_app_efb, "de la tablette")
 
 
 NOM_PAQUET_FX = "aeroclubmanager-fx"
@@ -610,11 +769,11 @@ def installer_effets_mission():
     dossiers = dossiers_msfs(cfg)   # v18 : dossiers verifies (UserCfg.opt, jamais WindowsApps)
     communautes = [c for c in (dossier_community(d) for d in dossiers) if c]
     if not communautes:
-        return
+        return community_introuvable(dossiers)   # v22 : simulateur trouve mais Community illisible -> a refaire
     try:
         version = requests.get(f"{BASE_URL}/api_efb.php", params={"action": "package_info", "name": "fx", "api_token": API_TOKEN}, timeout=10).json().get("version")
     except Exception:
-        return
+        return False   # v22 : site injoignable -> nouvel essai automatique
     if not version:
         return
 
@@ -623,13 +782,15 @@ def installer_effets_mission():
                if installe.get(c) != version or not os.path.isdir(os.path.join(c, NOM_PAQUET_FX, "SimObjects"))]
     if not a_faire:
         return
-    if reporter_si_msfs_ouvert("effets", installer_effets_mission, message_attente("des effets de mission (feux, fumigènes)", version)):
+    if reporter_si_msfs_ouvert("effets", installer_effets_mission, message_attente("des effets de mission (feux, fumigènes)", version),
+                               "des effets de mission (feux, fumigènes)", version):
         return
 
     print(f"🔥 Installation des effets de mission (feux, fumigènes) dans MSFS (version {version})...")
     r = requests.get(f"{BASE_URL}/api_efb.php", params={"action": "package", "name": "fx", "api_token": API_TOKEN}, timeout=60)
     r.raise_for_status()
-    if reporter_si_msfs_ouvert("effets", installer_effets_mission, message_attente("des effets de mission (feux, fumigènes)", version)):
+    if reporter_si_msfs_ouvert("effets", installer_effets_mission, message_attente("des effets de mission (feux, fumigènes)", version),
+                               "des effets de mission (feux, fumigènes)", version):
         return   # simulateur ouvert pendant le telechargement
     tmp = tempfile.mkdtemp(prefix="acm_fx_")
     try:
@@ -649,10 +810,7 @@ def installer_effets_mission():
     sauver_config(cfg)
 
 
-try:
-    installer_effets_mission()
-except Exception as e:
-    print(f"⚠️ Installation des effets de mission impossible ({e}). Le traqueur fonctionne normalement.")
+lancer_installation("effets", installer_effets_mission, "des effets de mission (feux, fumigènes)")
 
 
 NOM_PAQUET_PERSOS = "aeroclubmanager-persos"
@@ -672,11 +830,11 @@ def installer_personnages():
     dossiers = dossiers_msfs(cfg)   # v18 : dossiers verifies (UserCfg.opt, jamais WindowsApps)
     communautes = [c for c in (dossier_community(d) for d in dossiers) if c]
     if not communautes:
-        return
+        return community_introuvable(dossiers)   # v22 : simulateur trouve mais Community illisible -> a refaire
     try:
         version = requests.get(f"{BASE_URL}/api_efb.php", params={"action": "package_info", "name": "persos", "api_token": API_TOKEN}, timeout=10).json().get("version")
     except Exception:
-        return
+        return False   # v22 : site injoignable -> nouvel essai automatique
     if not version:
         return
     installe = cfg.get('persos_installe', {})
@@ -692,7 +850,8 @@ def installer_personnages():
             a_faire.append(c)
     if not a_faire:
         return
-    if reporter_si_msfs_ouvert("personnages", installer_personnages, message_attente("des personnages et véhicules", version)):
+    if reporter_si_msfs_ouvert("personnages", installer_personnages, message_attente("des personnages et véhicules", version),
+                               "des personnages et véhicules", version):
         return
     print(f"🧍 Téléchargement des personnages et véhicules AeroClubManager (version {version}, environ 1,1 Go — patientez)...")
     tmp = tempfile.mkdtemp(prefix="acm_persos_")
@@ -707,7 +866,8 @@ def installer_personnages():
                     if total and recu * 10 // total > palier:
                         palier = recu * 10 // total
                         print(f"   ... {palier * 10} %")
-        if reporter_si_msfs_ouvert("personnages", installer_personnages, message_attente("des personnages et véhicules", version)):
+        if reporter_si_msfs_ouvert("personnages", installer_personnages, message_attente("des personnages et véhicules", version),
+                               "des personnages et véhicules", version):
             return   # simulateur ouvert pendant le telechargement : rien n'est remplace
         with zipfile.ZipFile(chemin_zip) as z:
             z.extractall(tmp)
@@ -726,10 +886,7 @@ def installer_personnages():
     sauver_config(cfg)
 
 
-try:
-    installer_personnages()
-except Exception as e:
-    print(f"⚠️ Installation des personnages impossible ({e}). Le traqueur fonctionne normalement.")
+lancer_installation("personnages", installer_personnages, "des personnages et véhicules")
 
 
 NOM_PAQUET_ACM400 = "aeroclubmanager-acm400"
@@ -748,11 +905,11 @@ def installer_avions_acm():
     dossiers = dossiers_msfs(cfg)   # v18 : dossiers verifies (UserCfg.opt, jamais WindowsApps)
     communautes = [c for c in (dossier_community(d) for d in dossiers) if c]
     if not communautes:
-        return
+        return community_introuvable(dossiers)   # v22 : simulateur trouve mais Community illisible -> a refaire
     try:
         version = requests.get(f"{BASE_URL}/api_efb.php", params={"action": "package_info", "name": "acm400", "api_token": API_TOKEN}, timeout=10).json().get("version")
     except Exception:
-        return
+        return False   # v22 : site injoignable -> nouvel essai automatique
     if not version:
         return
     installe = cfg.get('acm400_installe', {})
@@ -768,7 +925,8 @@ def installer_avions_acm():
             a_faire.append(c)
     if not a_faire:
         return
-    if reporter_si_msfs_ouvert("avions", installer_avions_acm, message_attente("des avions ACM 400 / ACM 500", version)):
+    if reporter_si_msfs_ouvert("avions", installer_avions_acm, message_attente("des avions ACM 400 / ACM 500", version),
+                               "des avions ACM 400 / ACM 500", version):
         return
     print(f"✈️ Téléchargement des avions ACM 400 / ACM 500 (version {version}, environ 500 Mo)...")
     tmp = tempfile.mkdtemp(prefix="acm_acm400_")
@@ -783,7 +941,8 @@ def installer_avions_acm():
                     if total and recu * 10 // total > palier:
                         palier = recu * 10 // total
                         print(f"   ... {palier * 10} %")
-        if reporter_si_msfs_ouvert("avions", installer_avions_acm, message_attente("des avions ACM 400 / ACM 500", version)):
+        if reporter_si_msfs_ouvert("avions", installer_avions_acm, message_attente("des avions ACM 400 / ACM 500", version),
+                               "des avions ACM 400 / ACM 500", version):
             return   # simulateur ouvert pendant le telechargement : rien n'est remplace
         with zipfile.ZipFile(chemin_zip) as z:
             z.extractall(tmp)
@@ -802,10 +961,7 @@ def installer_avions_acm():
     sauver_config(cfg)
 
 
-try:
-    installer_avions_acm()
-except Exception as e:
-    print(f"⚠️ Installation des avions ACM 400 impossible ({e}). Le traqueur fonctionne normalement.")
+lancer_installation("avions", installer_avions_acm, "des avions ACM 400 / ACM 500")
 
 
 DOSSIER_SOL = os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])), 'services_sol')
@@ -842,13 +998,14 @@ def installer_services_sol():
     try:
         version = requests.get(f"{BASE_URL}/api_efb.php", params={"action": "package_info", "name": "sol", "api_token": API_TOKEN}, timeout=10).json().get("version")
     except Exception:
-        return
+        return False   # v22 : site injoignable -> nouvel essai automatique
     if not version or (cfg.get('sol_installe') == version and os.path.isfile(os.path.join(DOSSIER_SOL, 'AcmSol.exe'))
                        and os.path.isfile(os.path.join(DOSSIER_SOL, 'AcmPilotage.exe'))):
         return
     # v21 : jamais pendant qu'un de ses programmes tourne (AcmSol, AcmPilotage... lances par le traqueur)
     if programmes_sol_en_cours():
-        reporter_maj("services au sol", installer_services_sol, message_attente("des services au sol", version))
+        reporter_maj("services au sol", installer_services_sol, message_attente("des services au sol", version),
+                        "des services au sol", version)
         return
     print(f"🚗 Installation des services au sol (véhicules et passagers à l'embarquement, version {version})...")
     r = requests.get(f"{BASE_URL}/api_efb.php", params={"action": "package", "name": "sol", "api_token": API_TOKEN}, timeout=60)
@@ -857,7 +1014,8 @@ def installer_services_sol():
     with zipfile.ZipFile(io.BytesIO(r.content)) as z:
         exes = {os.path.basename(i.filename).lower() for i in z.infolist() if i.filename.lower().endswith('.exe')}
         if programmes_sol_en_cours(exes):
-            reporter_maj("services au sol", installer_services_sol, message_attente("des services au sol", version))
+            reporter_maj("services au sol", installer_services_sol, message_attente("des services au sol", version),
+                        "des services au sol", version)
             return
         for info in z.infolist():
             nom = info.filename.split('/', 1)[-1]
@@ -870,10 +1028,7 @@ def installer_services_sol():
     print("✅ Services au sol installés.")
 
 
-try:
-    installer_services_sol()
-except Exception as e:
-    print(f"⚠️ Installation des services au sol impossible ({e}). Le traqueur fonctionne normalement.")
+lancer_installation("services au sol", installer_services_sol, "des services au sol")
 
 
 def signaler_installation_terminee():
@@ -1113,8 +1268,13 @@ def connecter_simconnect():
     from SimConnect import SimConnect, AircraftRequests
     tentative = 0
     while True:
+        # v22 : mises a jour en attente essayees AVANT chaque connexion aussi (toutes les 10 s au plus)
         try:
-            sim = SimConnect()
+            installer_maj_en_attente(intervalle=10)
+        except Exception:
+            pass
+        try:
+            sim = ouvrir_simconnect(SimConnect, DELAI_SIMCONNECT)   # v22 : ne peut plus rester bloque si le simulateur se ferme
             aq = AircraftRequests(sim, _time=50)
             print("✅ Connexion à SimConnect (MSFS) initialisée avec succès !")
             return sim, aq
@@ -1122,7 +1282,7 @@ def connecter_simconnect():
             tentative += 1
             # v21 : simulateur ferme pendant que le traqueur attend : les mises a jour mises de cote s'installent maintenant
             try:
-                installer_maj_en_attente()
+                installer_maj_en_attente(intervalle=10)
             except Exception:
                 pass
             if tentative == 1:

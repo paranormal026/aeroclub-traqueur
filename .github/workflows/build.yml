@@ -38,6 +38,9 @@ jobs:
       - name: Tests v21 (aucun paquet ni programme remplace pendant que le simulateur tourne, mise a jour en attente)
         run: python tests/test_v21.py
 
+      - name: Tests v22 (tablette jamais oubliee - jonction non traversable, simulateur qui se ferme, connexion bloquee, nouveaux essais)
+        run: python tests/test_v22.py
+
       - name: Build veilleur
         run: pyinstaller --onefile --noconsole --name acm_veilleur --icon installateur/acm.ico --add-data "voix_veilleur;voix_veilleur" --add-binary "SimConnect.dll;." acm_veilleur.py
 
