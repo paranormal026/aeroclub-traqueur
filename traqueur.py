@@ -114,7 +114,11 @@ def touche_console_commandes(kbhit=None, getwch=None, ouvrir=None):
             elif ch in ('c', 'C'):
                 demande = True
         if demande:
-            print("🎮 Ouverture des commandes de tir (" + (ouvrir or ouvrir_commandes)() + ")...")
+            quoi = (ouvrir or ouvrir_commandes)()
+            try:
+                print("🎮 Ouverture des commandes de tir (" + str(quoi) + ")...")
+            except Exception:
+                pass   # console qui n'affiche pas les emojis : la fenetre est ouverte quand meme
             return True
     except Exception:
         pass
