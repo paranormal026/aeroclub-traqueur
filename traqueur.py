@@ -39,10 +39,95 @@ BASE_URL = "https://aeroclubmanager.fr/msfs"
 # Tests automatiques uniquement (GitHub Actions) : faux site local sur 127.0.0.1, jamais une autre adresse
 if re.match(r"^http://127\.0\.0\.1:\d+$", os.environ.get("ACM_TRAQUEUR_URL_TEST", "")):
     BASE_URL = os.environ["ACM_TRAQUEUR_URL_TEST"]
-VERSION_ACTUELLE = 22
+VERSION_ACTUELLE = 23
 DOSSIER_TRAQUEUR = os.path.dirname(os.path.abspath(sys.argv[0]))
 CONFIG_PATH = os.path.join(DOSSIER_TRAQUEUR, 'config.json')
 PAGE_INSTALLATION = "https://aeroclubmanager.fr/msfs/installer.php"
+
+# v23 : commandes de tir (mission frappe air-sol) : touches du clavier et boutons de manette attribues dans la fenetre
+# « Commandes de tir AeroClubManager » (AcmCommandes.exe, paquet des services au sol) ou sur la page du site ; AcmPilotage les lit.
+ADRESSE_COMMANDES = "https://aeroclubmanager.fr/msfs/commandes_tir.php"
+NOM_RACCOURCI_COMMANDES = "Commandes AeroClubManager.lnk"
+
+
+def _lancer_detache(args, dossier):
+    import subprocess
+    subprocess.Popen(args, cwd=dossier, creationflags=0x00000008 | 0x00000200)   # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+
+
+def _ouvrir_page(adresse):
+    import webbrowser
+    webbrowser.open(adresse)
+
+
+def ouvrir_commandes(dossier_sol=None, lancer=None, ouvrir_page=None):
+    """v23 : ouvre la fenetre des commandes de tir (AcmCommandes.exe, avec le config.json du traqueur), sinon la page du site.
+    Renvoie « fenetre » ou « page »."""
+    dossier_sol = dossier_sol or os.path.join(DOSSIER_TRAQUEUR, 'services_sol')
+    exe = os.path.join(dossier_sol, 'AcmCommandes.exe')
+    if os.path.isfile(exe):
+        (lancer or _lancer_detache)([exe, '--config', CONFIG_PATH], dossier_sol)
+        return 'fenetre'
+    (ouvrir_page or _ouvrir_page)(ADRESSE_COMMANDES)
+    return 'page'
+
+
+def creer_raccourci_commandes(cfg, exe_traqueur, dossier_sol, executer=None):
+    """v23 : raccourci « Commandes AeroClubManager » sur le bureau (traqueur.exe --commandes), cree UNE fois : s'il est supprime,
+    il n'est pas recree (cfg['raccourci_commandes']). Bureau reel (OneDrive compris) donne par Windows. True si cfg a change."""
+    if cfg.get('raccourci_commandes') or not os.path.isfile(os.path.join(dossier_sol, 'AcmCommandes.exe')):
+        return False
+    q = lambda s: "'" + str(s).replace("'", "''") + "'"   # chaine PowerShell entre apostrophes
+    script = ("$d = [Environment]::GetFolderPath('Desktop'); "
+              "$s = (New-Object -ComObject WScript.Shell).CreateShortcut((Join-Path $d " + q(NOM_RACCOURCI_COMMANDES) + ")); "
+              "$s.TargetPath = " + q(exe_traqueur) + "; $s.Arguments = '--commandes'; "
+              "$s.WorkingDirectory = " + q(os.path.dirname(exe_traqueur)) + "; "
+              "$s.IconLocation = " + q(os.path.join(dossier_sol, 'AcmCommandes.exe') + ",0") + "; "
+              "$s.Description = 'Commandes de tir AeroClubManager : touches et boutons de manette'; $s.Save()")
+    if executer is None:
+        import subprocess
+
+        def executer(cmd):
+            return subprocess.run(cmd, capture_output=True, timeout=30, creationflags=0x08000000).returncode == 0
+    try:
+        ok = executer(["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script])
+    except Exception:
+        ok = False
+    if ok:
+        cfg['raccourci_commandes'] = True
+    return bool(ok)
+
+
+def touche_console_commandes(kbhit=None, getwch=None, ouvrir=None):
+    """v23 : touche C dans la fenetre du traqueur -> commandes de tir. Ne bloque jamais (touches deja tapees seulement)."""
+    try:
+        if kbhit is None:
+            import msvcrt
+            kbhit, getwch = msvcrt.kbhit, msvcrt.getwch
+        demande = False
+        for _i in range(32):
+            if not kbhit():
+                break
+            ch = getwch()
+            if ch in ('\x00', '\xe0'):
+                getwch()          # touche speciale (fleches, F1...) : 2 codes
+            elif ch in ('c', 'C'):
+                demande = True
+        if demande:
+            print("🎮 Ouverture des commandes de tir (" + (ouvrir or ouvrir_commandes)() + ")...")
+            return True
+    except Exception:
+        pass
+    return False
+
+
+# v23 : raccourci « Commandes AeroClubManager » (traqueur.exe --commandes) : fenetre des commandes, sans lancer un 2e traqueur
+if '--commandes' in sys.argv[1:]:
+    try:
+        ouvrir_commandes()
+    except Exception as _e:
+        print(f"⚠️ Commandes de tir : {_e}")
+    sys.exit()
 
 
 def verifier_mise_a_jour():
@@ -120,6 +205,15 @@ def charger_config():
 
 
 def sauver_config(cfg):
+    # v23 : la fenetre des commandes de tir (AcmCommandes.exe) ecrit aussi « commandes_tir » dans ce fichier pendant que le
+    # traqueur tourne : la version la plus recente (champ « maj ») est gardee, jamais ecrasee par la copie en memoire
+    try:
+        disque = charger_config().get('commandes_tir')
+        actuel = cfg.get('commandes_tir')
+        if isinstance(disque, dict) and (not isinstance(actuel, dict) or int(disque.get('maj', 0) or 0) > int(actuel.get('maj', 0) or 0)):
+            cfg['commandes_tir'] = disque
+    except Exception:
+        pass
     with open(CONFIG_PATH, 'w', encoding='utf-8') as f:
         json.dump(cfg, f, indent=2)
 
@@ -1032,6 +1126,18 @@ def installer_services_sol():
 
 lancer_installation("services au sol", installer_services_sol, "des services au sol")
 
+# v23 : commandes de tir (frappe air-sol) : raccourci sur le bureau (une fois) et rappel de la touche C
+try:
+    if getattr(sys, 'frozen', False):
+        _cfg_cmd = charger_config()
+        if creer_raccourci_commandes(_cfg_cmd, os.path.abspath(sys.argv[0]), DOSSIER_SOL):
+            sauver_config(_cfg_cmd)
+            print("🎮 Raccourci « Commandes AeroClubManager » créé sur le bureau (touches et boutons de manette pour le tir).")
+    if os.path.isfile(os.path.join(DOSSIER_SOL, 'AcmCommandes.exe')):
+        print("🎮 Commandes de tir : appuyez sur C dans cette fenêtre (ou raccourci « Commandes AeroClubManager » du bureau).")
+except Exception:
+    pass
+
 
 def signaler_installation_terminee():
     """Second contact, une fois les paquets installes : la page du site affiche ce qui est en place."""
@@ -1545,6 +1651,8 @@ pilotage = Pilotage()
 try:
     while True:
         try:
+            # v23 : touche C dans cette fenetre -> commandes de tir (touches et boutons de manette)
+            touche_console_commandes()
             # v21 : mises a jour mises de cote (tablette, effets, personnages...) : installees des que le simulateur est ferme
             if MAJ_EN_ATTENTE:
                 try:

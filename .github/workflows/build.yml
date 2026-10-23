@@ -41,6 +41,9 @@ jobs:
       - name: Tests v22 (tablette jamais oubliee - jonction non traversable, simulateur qui se ferme, connexion bloquee, nouveaux essais)
         run: python tests/test_v22.py
 
+      - name: Tests v23 (commandes de tir - commandes de la fenetre gardees dans config.json, --commandes, raccourci du bureau, touche C)
+        run: python tests/test_v23.py
+
       - name: Build veilleur
         run: pyinstaller --onefile --noconsole --name acm_veilleur --icon installateur/acm.ico --add-data "voix_veilleur;voix_veilleur" --add-binary "SimConnect.dll;." acm_veilleur.py
 
