@@ -9,6 +9,7 @@ Carburant reel des missions (acm_carburant.py), SimConnect simule par un diction
 4. traqueur.py : version 20, textes de la console au vouvoiement et sans « MSFS 2020 ou », branchement de la consigne.
 """
 import ast
+import re
 import os
 import sys
 import tempfile
@@ -136,7 +137,7 @@ class TestTraqueurSource(unittest.TestCase):
         ast.parse(self.src)
 
     def test_version_et_textes(self):
-        self.assertIn("VERSION_ACTUELLE = 20", self.src)
+        self.assertGreaterEqual(int(re.search(r"^VERSION_ACTUELLE = (\d+)", self.src, re.M).group(1)), 20)   # v21 et suivantes acceptees
         self.assertNotIn("Laisse cette fenêtre", self.src)
         self.assertIn("Laissez cette fenêtre ouverte", self.src)
         self.assertNotIn("MSFS 2020 ou", self.src)
