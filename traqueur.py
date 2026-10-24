@@ -39,7 +39,7 @@ BASE_URL = "https://aeroclubmanager.fr/msfs"
 # Tests automatiques uniquement (GitHub Actions) : faux site local sur 127.0.0.1, jamais une autre adresse
 if re.match(r"^http://127\.0\.0\.1:\d+$", os.environ.get("ACM_TRAQUEUR_URL_TEST", "")):
     BASE_URL = os.environ["ACM_TRAQUEUR_URL_TEST"]
-VERSION_ACTUELLE = 23
+VERSION_ACTUELLE = 24
 DOSSIER_TRAQUEUR = os.path.dirname(os.path.abspath(sys.argv[0]))
 CONFIG_PATH = os.path.join(DOSSIER_TRAQUEUR, 'config.json')
 PAGE_INSTALLATION = "https://aeroclubmanager.fr/msfs/installer.php"
@@ -565,13 +565,16 @@ _MAJ_REPORTEES = set()   # mises a jour remises en attente pendant l'essai en co
 _MAJ_ESSAI = {"dernier": 0.0, "annonce": False, "infos": {}, "annoncees": set(), "echecs": {}}
 
 
-def reporter_maj(nom, fonction, message, quoi=None, version=None):
-    """Met la mise a jour de cote (une seule fois le message, console + journal)."""
+def reporter_maj(nom, fonction, message, quoi=None, version=None, raison=None):
+    """Met la mise a jour de cote (une seule fois le message, console + journal).
+    v24 : « raison » (programme qui bloque, fichier verrouille...) reprise dans « impossible pour l'instant (...) »."""
     if nom not in MAJ_EN_ATTENTE:
         journal(message)
     MAJ_EN_ATTENTE[nom] = fonction
     if quoi:
         _MAJ_ESSAI["infos"][nom] = (quoi, version)
+    if raison:
+        _MAJ_ESSAI.setdefault("raisons", {})[nom] = raison
     _MAJ_REPORTEES.add(nom)
 
 
@@ -610,6 +613,8 @@ def installer_maj_en_attente(intervalle=30):
             _MAJ_ESSAI["annoncees"].add(nom)
             journal(f"🔧 Simulateur fermé : installation {etiquette}… (patientez avant de le relancer)")
         _MAJ_REPORTEES.discard(nom)
+        raisons = _MAJ_ESSAI.setdefault("raisons", {})
+        ancienne_raison = raisons.pop(nom, None)
         faites += 1
         try:
             resultat = fonction()
@@ -621,13 +626,16 @@ def installer_maj_en_attente(intervalle=30):
             nb_echecs += 1
             delai = min(600, 30 * 2 ** min(nb_echecs - 1, 5))
             _MAJ_ESSAI["echecs"][nom] = (nb_echecs, time.time() + delai)
-            if erreur is not None or nb_echecs == 1:
-                raison = f" ({erreur})" if erreur is not None else ""
+            cause = erreur if erreur is not None else raisons.get(nom)   # v24 : jamais sans la raison quand elle est connue
+            if erreur is not None or nb_echecs == 1 or (cause and cause != ancienne_raison):
+                raison = f" ({cause})" if cause else ""
                 journal(f"⚠️ Installation {etiquette} impossible pour l'instant{raison} : nouvel essai automatique dans "
                         f"{delai} s.")
             continue
         if nom in _MAJ_REPORTEES:   # remise en attente (simulateur rouvert pendant le telechargement...) : sans message
-            _MAJ_ESSAI["annoncees"].discard(nom)
+            # v24 : « 🔧 ... » de nouveau seulement si le simulateur a ete rouvert (plus de repetition toutes les 11 s)
+            if msfs_ouvert():
+                _MAJ_ESSAI["annoncees"].discard(nom)
             continue
         MAJ_EN_ATTENTE.pop(nom, None)
         _MAJ_ESSAI["infos"].pop(nom, None)
@@ -647,7 +655,8 @@ def lancer_installation(nom, fonction, quoi):
     except Exception as e:
         resultat, erreur = False, e
     if resultat is False:
-        raison = f" ({erreur})" if erreur is not None else ""
+        cause = erreur if erreur is not None else _MAJ_ESSAI.get("raisons", {}).get(nom)   # v24 : raison connue affichee
+        raison = f" ({cause})" if cause else ""
         reporter_maj(nom, fonction, f"⚠️ Installation {quoi} impossible pour l'instant{raison} : nouvel essai automatique "
                                     f"dans 30 s (le traqueur fonctionne normalement).", quoi)
         _MAJ_ESSAI["echecs"][nom] = (1, time.time() + 30)
@@ -1087,6 +1096,203 @@ def programmes_sol_en_cours(noms=None):
     return sorted(en_cours)
 
 
+# v24 : (24/10) la mise a jour des services au sol n'etait jamais installee, simulateur ferme, tant que la fenetre des
+# commandes de tir (AcmCommandes.exe) restait ouverte. Simulateur ferme, NOS programmes du dossier services_sol sont
+# fermes proprement (WM_CLOSE / taskkill sans /F, puis /F apres 5 s), uniquement par PID, jamais par nom d'image.
+PROGRAMMES_SOL_ACM = ("acmcommandes.exe", "acmpilotage.exe", "acmsol.exe", "acmsaut.exe")
+FICHIER_MAJ_SOL = "maj_sol_en_attente.txt"   # lu par AcmCommandes.exe au demarrage (version prete, pas encore installee)
+
+
+def marquer_maj_sol(version):
+    """v24 : services_sol/maj_sol_en_attente.txt contient la version en attente ; supprime si version est None."""
+    chemin = os.path.join(DOSSIER_SOL, FICHIER_MAJ_SOL)
+    try:
+        if version:
+            if os.path.isdir(DOSSIER_SOL):
+                with open(chemin, "w", encoding="utf-8") as f:
+                    f.write(str(version))
+        elif os.path.exists(chemin):
+            os.remove(chemin)
+    except OSError:
+        pass
+
+
+def _chemin_processus(pid):
+    """v24 : chemin complet de l'exe d'un processus (None s'il est illisible)."""
+    try:
+        import ctypes
+        from ctypes import wintypes
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.OpenProcess.restype = wintypes.HANDLE
+        k32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+        k32.QueryFullProcessImageNameW.argtypes = (wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR,
+                                                   ctypes.POINTER(wintypes.DWORD))
+        k32.CloseHandle.argtypes = (wintypes.HANDLE,)
+        h = k32.OpenProcess(0x1000, False, int(pid))   # PROCESS_QUERY_LIMITED_INFORMATION
+        if not h:
+            return None
+        try:
+            tampon = ctypes.create_unicode_buffer(32768)
+            taille = wintypes.DWORD(32768)
+            if k32.QueryFullProcessImageNameW(h, 0, tampon, ctypes.byref(taille)):
+                return tampon.value
+        finally:
+            k32.CloseHandle(h)
+    except Exception:
+        pass
+    return None
+
+
+def _lire_tasklist(*filtre):
+    """v24 : lignes CSV de tasklist (nom, PID, ...)."""
+    import csv
+    import subprocess
+    sortie = subprocess.run(["tasklist", *filtre, "/FO", "CSV", "/NH"], capture_output=True, text=True,
+                            creationflags=0x08000000).stdout or ""
+    return [l for l in csv.reader(sortie.splitlines()) if len(l) >= 2]
+
+
+def processus_sol(chemin_de=None):
+    """v24 : [(nom, pid)] des programmes de NOTRE dossier services_sol en cours d'execution. Chemin de l'exe lisible :
+    retenu seulement s'il est dans DOSSIER_SOL ; illisible : seulement les 4 programmes ACM connus. Jamais un autre."""
+    dossier = os.path.normcase(os.path.abspath(DOSSIER_SOL))
+    noms = set(PROGRAMMES_SOL_ACM)
+    try:
+        noms |= {n.lower() for n in os.listdir(DOSSIER_SOL) if n.lower().endswith(".exe")}
+    except Exception:
+        pass
+    try:
+        lignes = _lire_tasklist()
+    except Exception:
+        return []
+    trouves = []
+    for ligne in lignes:
+        nom = ligne[0].strip()
+        if nom.lower() not in noms:
+            continue
+        try:
+            pid = int(ligne[1].strip())
+        except ValueError:
+            continue
+        if pid <= 4 or pid == os.getpid():
+            continue
+        chemin = (chemin_de or _chemin_processus)(pid)
+        if chemin:
+            if os.path.normcase(os.path.dirname(os.path.abspath(chemin))) != dossier:
+                continue   # meme nom, mais pas notre programme : jamais touche
+        elif nom.lower() not in PROGRAMMES_SOL_ACM:
+            continue
+        trouves.append((nom, pid))
+    return trouves
+
+
+def _poster_wm_close(pid):
+    """v24 : demande la fermeture (WM_CLOSE) des fenetres visibles du processus « pid ». Renvoie le nombre de fenetres."""
+    try:
+        import ctypes
+        from ctypes import wintypes
+        u32 = ctypes.WinDLL("user32", use_last_error=True)
+        fenetres = []
+        PROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+        u32.GetWindowThreadProcessId.argtypes = (wintypes.HWND, ctypes.POINTER(wintypes.DWORD))
+        u32.IsWindowVisible.argtypes = (wintypes.HWND,)
+        u32.PostMessageW.argtypes = (wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM)
+        u32.EnumWindows.argtypes = (PROC, wintypes.LPARAM)
+
+        def chaque(hwnd, _l):
+            proprietaire = wintypes.DWORD(0)
+            u32.GetWindowThreadProcessId(hwnd, ctypes.byref(proprietaire))
+            if proprietaire.value == int(pid) and u32.IsWindowVisible(hwnd):
+                fenetres.append(hwnd)
+            return True
+        u32.EnumWindows(PROC(chaque), 0)
+        for hwnd in fenetres:
+            u32.PostMessageW(hwnd, 0x0010, 0, 0)   # WM_CLOSE
+        return len(fenetres)
+    except Exception:
+        return 0
+
+
+def _taskkill(pid, force=False):
+    """v24 : taskkill par PID (jamais par nom d'image). Renvoie (code, texte)."""
+    import subprocess
+    try:
+        r = subprocess.run(["taskkill", "/PID", str(int(pid))] + (["/F"] if force else []), capture_output=True, text=True,
+                           creationflags=0x08000000)
+        return r.returncode, ((r.stdout or "") + (r.stderr or "")).strip()
+    except Exception as e:
+        return -1, str(e)
+
+
+def _pid_vivant(pid):
+    try:
+        return any(l[1].strip() == str(int(pid)) for l in _lire_tasklist("/FI", f"PID eq {int(pid)}"))
+    except Exception:
+        return False
+
+
+def _texte_fermeture(nom):
+    base = os.path.splitext(nom)[0]
+    if nom.lower() == "acmcommandes.exe":
+        return "🔧 Fermeture de la fenêtre des commandes pour installer la mise à jour…"
+    de = "d'" if base[:1].lower() in "aeiouyh" else "de "
+    return f"🔧 Fermeture {de}{base} (programme des services au sol) pour installer la mise à jour…"
+
+
+def liberer_programmes_sol(attente=5.0):
+    """v24 : simulateur ferme, ferme NOS programmes du dossier services_sol pour pouvoir remplacer leurs fichiers.
+    Fermeture propre (WM_CLOSE pour la fenetre des commandes, taskkill sans /F), puis /F apres « attente » secondes.
+    Renvoie (ok, raison, noms fermes en minuscules). ok False : un programme a resiste (message clair au journal)."""
+    procs = processus_sol()
+    if not procs:
+        return True, None, []
+    for nom, pid in procs:
+        journal(_texte_fermeture(nom))
+        if nom.lower() != "acmcommandes.exe" or not _poster_wm_close(pid):
+            _taskkill(pid, False)
+    restants = list(procs)
+    fin = time.time() + attente
+    while restants:
+        restants = [(n, p) for n, p in restants if _pid_vivant(p)]
+        if not restants or time.time() >= fin:
+            break
+        time.sleep(0.25)
+    refus = {}
+    for nom, pid in restants:
+        code, texte = _taskkill(pid, True)
+        if code != 0 and texte:
+            refus[pid] = texte
+    fin = time.time() + 3
+    while restants:
+        restants = [(n, p) for n, p in restants if _pid_vivant(p)]
+        if not restants or time.time() >= fin:
+            break
+        time.sleep(0.25)
+    fermes = sorted({n.lower() for n, p in procs if (n, p) not in restants})
+    if not restants:
+        return True, None, fermes
+    for nom, pid in restants:
+        detail = f" (Windows : {refus[pid]})" if pid in refus else ""
+        if nom.lower() == "acmcommandes.exe":
+            quoi_faire = ("Fermez la fenêtre « Commandes de tir AeroClubManager » (croix en haut à droite) ; la mise à jour "
+                          "se fera ensuite toute seule. Si elle n'apparaît pas, redémarrez l'ordinateur.")
+        else:
+            quoi_faire = (f"Fermez {nom} dans le Gestionnaire des tâches (Ctrl+Maj+Échap) ; la mise à jour se fera ensuite "
+                          f"toute seule. Si cela ne suffit pas, redémarrez l'ordinateur.")
+        journal(f"⚠️ Mise à jour des services au sol bloquée : {nom} (PID {pid}) refuse de se fermer{detail}. {quoi_faire}")
+    raison = ", ".join(f"{n} (PID {p}) toujours ouvert" for n, p in restants)
+    return False, raison, fermes
+
+
+def _sol_bloque(version, raison):
+    """v24 : mise a jour des services au sol remise a plus tard, toujours avec sa raison."""
+    marquer_maj_sol(version)
+    reporter_maj("services au sol", installer_services_sol,
+                 f"⚠️ Installation des services au sol {version} impossible pour l'instant ({raison}) : nouvel essai "
+                 f"automatique dans 30 s (le traqueur fonctionne normalement).", "des services au sol", version, raison)
+    return False
+
+
 def installer_services_sol():
     """Telecharge (ou met a jour) le programme des services au sol, a cote du traqueur. v21 : reporte tant qu'un de ses
     programmes tourne (l'ecrire en marche echouerait a moitie)."""
@@ -1099,33 +1305,66 @@ def installer_services_sol():
         version = requests.get(f"{BASE_URL}/api_efb.php", params={"action": "package_info", "name": "sol", "api_token": API_TOKEN}, timeout=10).json().get("version")
     except Exception:
         return False   # v22 : site injoignable -> nouvel essai automatique
-    if not version or (cfg.get('sol_installe') == version and os.path.isfile(os.path.join(DOSSIER_SOL, 'AcmSol.exe'))
-                       and os.path.isfile(os.path.join(DOSSIER_SOL, 'AcmPilotage.exe'))):
+    if not version:
         return
-    # v21 : jamais pendant qu'un de ses programmes tourne (AcmSol, AcmPilotage... lances par le traqueur)
-    if programmes_sol_en_cours():
-        reporter_maj("services au sol", installer_services_sol, message_attente("des services au sol", version),
-                        "des services au sol", version)
+    if (cfg.get('sol_installe') == version and os.path.isfile(os.path.join(DOSSIER_SOL, 'AcmSol.exe'))
+            and os.path.isfile(os.path.join(DOSSIER_SOL, 'AcmPilotage.exe'))):
+        marquer_maj_sol(None)
         return
+    marquer_maj_sol(version)   # v24 : AcmCommandes.exe annonce la mise a jour en attente
+    fermes = set()
+
+    def liberer(noms=None):
+        """None : rien ne bloque ; « reporte » : simulateur ouvert ; sinon la raison du blocage."""
+        # v21 : jamais pendant qu'un de ses programmes tourne (AcmSol, AcmPilotage... lances par le traqueur)
+        if not programmes_sol_en_cours(noms):
+            return None
+        if msfs_ouvert():   # simulateur ouvert : rien n'est ferme, la mise a jour attend sa fermeture
+            reporter_maj("services au sol", installer_services_sol, message_attente("des services au sol", version),
+                         "des services au sol", version)
+            return "reporte"
+        ok, raison, noms_fermes = liberer_programmes_sol()   # v24 : simulateur ferme, nos programmes sont fermes
+        fermes.update(noms_fermes)
+        return None if ok else raison
+    bloque = liberer()
+    if bloque == "reporte":
+        return
+    if bloque:
+        return _sol_bloque(version, bloque)
     print(f"🚗 Installation des services au sol (véhicules et passagers à l'embarquement, version {version})...")
     r = requests.get(f"{BASE_URL}/api_efb.php", params={"action": "package", "name": "sol", "api_token": API_TOKEN}, timeout=60)
     r.raise_for_status()
     os.makedirs(DOSSIER_SOL, exist_ok=True)
     with zipfile.ZipFile(io.BytesIO(r.content)) as z:
         exes = {os.path.basename(i.filename).lower() for i in z.infolist() if i.filename.lower().endswith('.exe')}
-        if programmes_sol_en_cours(exes):
-            reporter_maj("services au sol", installer_services_sol, message_attente("des services au sol", version),
-                        "des services au sol", version)
+        bloque = liberer(exes)
+        if bloque == "reporte":
             return
+        if bloque:
+            return _sol_bloque(version, bloque)
         for info in z.infolist():
             nom = info.filename.split('/', 1)[-1]
             if not nom or info.is_dir():
                 continue
-            with open(os.path.join(DOSSIER_SOL, os.path.basename(nom)), 'wb') as f:
-                f.write(z.read(info))
+            chemin = os.path.join(DOSSIER_SOL, os.path.basename(nom))
+            try:
+                with open(chemin, 'wb') as f:
+                    f.write(z.read(info))
+            except OSError as e:   # v24 : fichier verrouille (programme encore ouvert, antivirus...) : jamais en silence
+                journal(f"⚠️ Impossible d'écrire le fichier « {chemin} » ({type(e).__name__} : {e}). Un programme "
+                        f"l'utilise encore : fermez-le (ou attendez la fin de l'analyse de l'antivirus) ; la mise à jour "
+                        f"se refera toute seule. Si cela continue, redémarrez l'ordinateur.")
+                return _sol_bloque(version, f"fichier {os.path.basename(chemin)} verrouillé")
     cfg['sol_installe'] = version
     sauver_config(cfg)
+    marquer_maj_sol(None)
     print("✅ Services au sol installés.")
+    if "acmcommandes.exe" in fermes:   # v24 : la fenetre des commandes fermee pour la mise a jour est rouverte
+        try:
+            ouvrir_commandes(DOSSIER_SOL)
+            print("🎮 Fenêtre des commandes de tir rouverte.")
+        except Exception:
+            pass
 
 
 lancer_installation("services au sol", installer_services_sol, "des services au sol")

@@ -32,9 +32,12 @@ with open(os.path.join(RACINE, "traqueur.py"), encoding="utf-8") as _f:
 
 FONCTIONS = ["regenerer_layout", "reporter_maj", "reporter_si_msfs_ouvert", "message_attente", "installer_maj_en_attente",
              "installer_app_efb", "installer_effets_mission", "installer_personnages", "installer_avions_acm",
-             "programmes_sol_en_cours", "installer_services_sol"]
+             "programmes_sol_en_cours", "installer_services_sol",
+             # v24 : fermeture de nos programmes du dossier services_sol (simulateur ferme), fichier maj_sol_en_attente.txt
+             "marquer_maj_sol", "_chemin_processus", "_lire_tasklist", "processus_sol", "_poster_wm_close", "_taskkill",
+             "_pid_vivant", "_texte_fermeture", "liberer_programmes_sol", "_sol_bloque"]
 VARIABLES = ["MAJ_EN_ATTENTE", "_MAJ_REPORTEES", "_MAJ_ESSAI", "NOM_PAQUET_EFB", "DOSSIER_APP_EFB", "NOM_PAQUET_FX",
-             "NOM_PAQUET_PERSOS", "NOM_PAQUET_ACM400"]
+             "NOM_PAQUET_PERSOS", "NOM_PAQUET_ACM400", "PROGRAMMES_SOL_ACM", "FICHIER_MAJ_SOL"]
 # v22 : plus besoin de relancer le traqueur (installation automatique a la fermeture du simulateur)
 TEXTE_TABLETTE = ("Une nouvelle version de la tablette (2.0.0) est prête : elle s'installera dès que vous fermerez le "
                   "simulateur (laissez le traqueur ouvert).")
@@ -303,13 +306,15 @@ class TestFermetureDuSimulateur(Base):
 
 class TestServicesSol(Base):
     def test_reporte_si_programme_en_cours(self):
+        # v24 : simulateur ouvert (ferme, nos programmes sont fermes pour la mise a jour : voir test_v24.py)
         self.anciens_paquets()
+        self.etat["ouvert"] = True
         self.etat["sol"] = ["acmpilotage.exe"]
         self.e["installer_services_sol"]()
         self.assertEqual(self.lire(self.sol, "AcmSol.exe"), "ANCIEN")
         self.assertEqual(self.cfg["sol_installe"], "1.0.0")
         self.assertIn("services au sol", self.e["MAJ_EN_ATTENTE"])
-        self.etat["sol"] = []
+        self.etat.update(ouvert=False, sol=[])
         self.e["installer_maj_en_attente"](intervalle=0)
         self.assertEqual(self.lire(self.sol, "AcmSol.exe"), "NOUVEAU")
         self.assertEqual(self.cfg["sol_installe"], "1.60.0")

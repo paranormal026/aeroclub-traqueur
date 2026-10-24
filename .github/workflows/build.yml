@@ -44,6 +44,9 @@ jobs:
       - name: Tests v23 (commandes de tir - commandes de la fenetre gardees dans config.json, --commandes, raccourci du bureau, touche C)
         run: python tests/test_v23.py
 
+      - name: Tests v24 (mise a jour des services au sol - nos programmes fermes simulateur ferme, raison toujours donnee, maj_sol_en_attente.txt)
+        run: python tests/test_v24.py
+
       - name: Build veilleur
         run: pyinstaller --onefile --noconsole --name acm_veilleur --icon installateur/acm.ico --add-data "voix_veilleur;voix_veilleur" --add-binary "SimConnect.dll;." acm_veilleur.py
 

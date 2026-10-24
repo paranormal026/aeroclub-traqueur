@@ -161,7 +161,7 @@ class TestV23(unittest.TestCase):
 
     # 5 ------------------------------------------------------------------------------------------------------------
     def test_5_branchements(self):
-        self.assertEqual(int(re.search(r"^VERSION_ACTUELLE = (\d+)", SOURCE, re.M).group(1)), 23)
+        self.assertGreaterEqual(int(re.search(r"^VERSION_ACTUELLE = (\d+)", SOURCE, re.M).group(1)), 23)   # v24 : 23 ou plus
         boucle = SOURCE[SOURCE.index("try:\n    while True:"):]
         self.assertIn("touche_console_commandes()", boucle[:600], "touche C lue a chaque tour de la boucle principale")
         apres_sol = SOURCE[SOURCE.index('lancer_installation("services au sol"'):]
