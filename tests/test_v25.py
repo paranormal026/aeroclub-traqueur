@@ -162,7 +162,8 @@ class TestCertificats(Dossiers):
         stable = c.preparer(source=pem)
         os.remove(stable)
         shutil.rmtree(mei)
-        refait = c.verifier()
+        with mock.patch.object(R, "bundle_certifi", return_value=None):   # certifi efface lui aussi
+            refait = c.verifier()
         self.assertTrue(os.path.isfile(refait))
         self.assertEqual(c.origine, "windows")
         self.assertLess(self.get(ADRESSES_OK[0]).status_code, 500)
@@ -230,7 +231,7 @@ class TestRuntime(Dossiers):
         ouvert = open(os.path.join(en_service, "certifi", "cacert.pem"), "rb")   # fichier ouvert : dossier en service
         os.utime(en_service, (vieux, vieux))
         try:
-            retires = R.nettoyer_runtime(rt, garder=moi)
+            retires = R.nettoyer_runtime(rt, garder=moi, vivant=lambda pid: False)
         finally:
             ouvert.close()
         self.assertFalse(os.path.exists(reste), "reste d'un ancien lancement retire")
@@ -250,12 +251,26 @@ class TestRuntime(Dossiers):
         os.utime(d, (time.time() - 3600,) * 2)
         h = ctypes.WinDLL(dll)
         try:
-            self.assertEqual(R.nettoyer_runtime(rt), [])
+            # 26/10 en CI : Windows ACCEPTE de renommer ce dossier (DLL chargee) -> la protection est le PID du lanceur
+            self.assertEqual(R.nettoyer_runtime(rt, vivant=lambda pid: pid == 0xdd), [], "lanceur vivant : garde")
             self.assertTrue(os.path.isfile(dll))
         finally:
             ctypes.windll.kernel32.FreeLibrary.argtypes = [ctypes.c_void_p]
             ctypes.windll.kernel32.FreeLibrary(h._handle)
-        self.assertEqual(R.nettoyer_runtime(rt), ["_MEI0000dd11"])
+        self.assertEqual(R.nettoyer_runtime(rt, vivant=lambda pid: False), ["_MEI0000dd11"])
+
+    def test_pid_du_dossier_et_vrai_processus(self):
+        self.assertEqual(R.pid_du_dossier("_MEI00003a302"), 0x3a30)
+        self.assertEqual(R.pid_du_dossier("_MEI00008fc82"), 36808)
+        self.assertIsNone(R.pid_du_dossier("_MEIabc"))
+        self.assertTrue(R.processus_vivant(os.getpid()))
+        self.assertFalse(R.processus_vivant(0x7FFFFFF0))
+        rt = R.dossier_runtime(self.env)
+        d = os.path.join(rt, "_MEI%08x7" % os.getpid())
+        os.makedirs(d)
+        os.utime(d, (time.time() - 3600,) * 2)
+        self.assertEqual(R.nettoyer_runtime(rt), [], "dossier d'un processus vivant (vrai PID) garde")
+        self.assertTrue(os.path.isdir(d))
 
     def test_nettoyer_runtime_jonction_jamais_suivie(self):
         rt = R.dossier_runtime(self.env)

@@ -96,14 +96,52 @@ def _est_lien(chemin):
         return True
 
 
-def nettoyer_runtime(dossier=None, garder=None, age_min_s=AGE_MIN_RESTE_S, maintenant=None):
+def pid_du_dossier(nom):
+    """Le lanceur PyInstaller nomme son dossier _MEI + son PID en 8 chiffres hexadecimaux + un suffixe (_MEI00003a302 :
+    PID 0x3a30). None si le nom ne suit pas ce modele."""
+    m = re.match(r"^_MEI([0-9A-Fa-f]{8})", nom)
+    return int(m.group(1), 16) if m else None
+
+
+def processus_vivant(pid):
+    """True si un processus de ce PID existe (dans le doute : True, le dossier est garde)."""
+    if not pid:
+        return False
+    if os.name != "nt":
+        try:
+            os.kill(pid, 0)
+            return True
+        except ProcessLookupError:
+            return False
+        except OSError:
+            return True
+    import ctypes
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    k32.OpenProcess.restype = ctypes.c_void_p
+    k32.CloseHandle.argtypes = [ctypes.c_void_p]
+    k32.GetExitCodeProcess.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_ulong)]
+    h = k32.OpenProcess(0x1000, False, int(pid))   # PROCESS_QUERY_LIMITED_INFORMATION
+    if not h:
+        return ctypes.get_last_error() != 87     # ERROR_INVALID_PARAMETER = aucun processus de ce PID
+    try:
+        code = ctypes.c_ulong(0)
+        if not k32.GetExitCodeProcess(h, ctypes.byref(code)):
+            return True
+        return code.value == 259                 # STILL_ACTIVE
+    finally:
+        k32.CloseHandle(h)
+
+
+def nettoyer_runtime(dossier=None, garder=None, age_min_s=AGE_MIN_RESTE_S, maintenant=None, vivant=None):
     """Retire les dossiers _MEI... laisses dans le dossier runtime par un traqueur/veilleur ferme brutalement.
-    Un dossier encore utilise (DLL chargees, fichiers ouverts) ne peut pas etre renomme par Windows : on essaie d'abord de
-    le RENOMMER, et seul un dossier renomme avec succes est supprime. Jamais : le dossier en cours (garder), un dossier
-    recent, un lien/jonction, un nom qui n'est pas _MEI..., rien en dehors du dossier runtime. Renvoie les noms retires."""
+    Un dossier est garde si son lanceur (PID dans le nom) tourne encore. ATTENTION : Windows ACCEPTE de renommer un dossier
+    dont une DLL est chargee (verifie en CI le 26/10) ; le renommage ne bloque que les fichiers ouverts. Seul un dossier
+    renomme avec succes est ensuite supprime. Jamais : le dossier en cours (garder), un dossier recent, un lien/jonction,
+    un nom qui n'est pas _MEI..., rien en dehors du dossier runtime. Renvoie les noms retires."""
     dossier = dossier or dossier_runtime()
     garder = _norm(garder) if garder else None
     maintenant = time.time() if maintenant is None else maintenant
+    vivant = vivant or processus_vivant
     retires = []
     try:
         noms = os.listdir(dossier)
@@ -124,9 +162,12 @@ def nettoyer_runtime(dossier=None, garder=None, age_min_s=AGE_MIN_RESTE_S, maint
                     continue
             except OSError:
                 continue
+            pid = pid_du_dossier(nom)
+            if pid is None or vivant(pid):
+                continue   # lanceur encore ouvert (ou nom inattendu) : dossier en service
             cible = chemin + ".suppr"
             try:
-                os.rename(chemin, cible)   # refuse par Windows si le dossier est encore utilise
+                os.rename(chemin, cible)   # refuse par Windows si un fichier du dossier est encore ouvert
             except OSError:
                 continue
             chemin = cible

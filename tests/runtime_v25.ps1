@@ -37,10 +37,8 @@ try {
   Start-Sleep 6
   $mei = @(Get-ChildItem $runtime -Directory -Filter "_MEI*")
   Verif ($mei.Count -eq 1) "un dossier de decompression : $($mei.FullName -join ', ')"
-  $renomme = $true
-  try { Rename-Item $mei[0].FullName "$($mei[0].Name).essai" -ErrorAction Stop } catch { $renomme = $false }
-  Verif (-not $renomme) "Windows refuse de renommer un dossier en service"
-  if ($renomme) { Rename-Item "$($mei[0].FullName).essai" $mei[0].Name }
+  # (Windows accepte de renommer un dossier dont les DLL sont chargees : la protection est le PID du lanceur dans le nom)
+  Verif ($mei[0].Name -like ("_MEI{0:x8}*" -f $p.Id)) "nom du dossier = PID du lanceur ($($p.Id)) : $($mei[0].Name)"
   $retires = & $Python -I -c "import sys; sys.path.insert(0, sys.argv[1]); import acm_robustesse as R; print(R.nettoyer_runtime(sys.argv[2], age_min_s=0))" $racine $runtime
   Verif ($retires -eq "[]" -and (Test-Path "$($mei[0].FullName)\python312.dll")) "nettoyer_runtime laisse le dossier du veilleur en service : $retires"
   # arret du veilleur lance par CE test (lanceur PyInstaller + programme), par PID
