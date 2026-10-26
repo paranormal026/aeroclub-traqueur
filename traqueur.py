@@ -1675,7 +1675,8 @@ def connecter_simconnect():
             installer_maj_en_attente(intervalle=10)
         except Exception:
             pass
-        SURVEILLANCE.verifier()   # v25 : fichiers effaces pendant l'attente du simulateur -> redemarrage
+        if 'SURVEILLANCE' in globals():   # (absente quand les tests chargent cette fonction seule)
+            SURVEILLANCE.verifier()   # v25 : fichiers effaces pendant l'attente du simulateur -> redemarrage
         try:
             sim = ouvrir_simconnect(SimConnect, DELAI_SIMCONNECT)   # v22 : ne peut plus rester bloque si le simulateur se ferme
             aq = AircraftRequests(sim, _time=50)
