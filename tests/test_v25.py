@@ -252,7 +252,7 @@ class TestRuntime(Dossiers):
         h = ctypes.WinDLL(dll)
         try:
             # 26/10 en CI : Windows ACCEPTE de renommer ce dossier (DLL chargee) -> la protection est le PID du lanceur
-            self.assertEqual(R.nettoyer_runtime(rt, vivant=lambda pid: pid == 0xdd), [], "lanceur vivant : garde")
+            self.assertEqual(R.nettoyer_runtime(rt, vivant=lambda pid: pid == 0x0000dd11), [], "lanceur vivant : garde")
             self.assertTrue(os.path.isfile(dll))
         finally:
             ctypes.windll.kernel32.FreeLibrary.argtypes = [ctypes.c_void_p]
