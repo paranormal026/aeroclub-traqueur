@@ -30,6 +30,27 @@ for _flux in (sys.stdout, sys.stderr):
     except Exception:
         pass
 
+# v25 : extraction hors de TEMP (--runtime-tmpdir), certificats hors de TEMP, auto-reparation (acm_robustesse.py)
+import acm_robustesse
+
+if '--diag-runtime' in sys.argv[1:]:
+    # Tests GitHub Actions : ou l'exe s'est decompresse, et quel fichier de certificats est utilise, puis sortie
+    _diag = acm_robustesse.rapport_runtime()
+    try:
+        _diag['certificats'], _diag['origine_certificats'] = acm_robustesse.preparer_certificats()
+    except Exception as _e:
+        _diag['certificats'], _diag['origine_certificats'] = None, f'erreur : {_e}'
+    print(json.dumps(_diag))
+    sys.exit(0)
+
+# Certificats de securite dans %LOCALAPPDATA%\AeroClubManager\certificats (copie stable de cacert.pem, sinon magasin Windows) :
+# un nettoyage de TEMP ne coupe plus la connexion au site. La verification des certificats reste toujours active.
+CERTIFICATS = acm_robustesse.Certificats(journal=print)
+try:
+    CERTIFICATS.preparer()
+except Exception as _e:
+    print(f"⚠️ Certificats de sécurité : {_e}")
+
 import acm_installation
 
 # Desinstallation (lancee par le desinstalleur) : nettoie les paquets ACM et le exe.xml puis quitte, avant tout le reste
@@ -39,7 +60,7 @@ BASE_URL = "https://aeroclubmanager.fr/msfs"
 # Tests automatiques uniquement (GitHub Actions) : faux site local sur 127.0.0.1, jamais une autre adresse
 if re.match(r"^http://127\.0\.0\.1:\d+$", os.environ.get("ACM_TRAQUEUR_URL_TEST", "")):
     BASE_URL = os.environ["ACM_TRAQUEUR_URL_TEST"]
-VERSION_ACTUELLE = 24
+VERSION_ACTUELLE = 25
 DOSSIER_TRAQUEUR = os.path.dirname(os.path.abspath(sys.argv[0]))
 CONFIG_PATH = os.path.join(DOSSIER_TRAQUEUR, 'config.json')
 PAGE_INSTALLATION = "https://aeroclubmanager.fr/msfs/installer.php"
@@ -186,14 +207,44 @@ def une_seule_instance():
     if os.name != 'nt':
         return
     import ctypes
-    ctypes.windll.kernel32.CreateMutexW(None, False, "AeroClubManagerTraqueur")
-    if ctypes.windll.kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    k32.CreateMutexW.restype = ctypes.c_void_p
+    k32.CloseHandle.argtypes = [ctypes.c_void_p]
+    # v25 : traqueur relance automatiquement (fichiers temporaires effaces) : l'ancien libere le verrou en quelques secondes
+    attente = 20.0 if acm_robustesse.est_relance(sys.argv) else 0.0
+    if not acm_robustesse.attendre_verrou(lambda: k32.CreateMutexW(None, False, "AeroClubManagerTraqueur"),
+                                         k32.CloseHandle, ctypes.get_last_error, attente):
         print("ℹ️ Le traqueur est deja ouvert dans une autre fenetre. Fermeture de celle-ci.")
         time.sleep(3)
         sys.exit()
 
 
 une_seule_instance()
+
+
+def _avant_relance():
+    """v25 : avant un redemarrage automatique, AcmPilotage est arrete proprement (le nouveau traqueur le relance)."""
+    try:
+        if globals().get('pilotage') is not None:
+            pilotage.arreter()
+    except Exception:
+        pass
+    try:
+        if globals().get('effets_mission') is not None:
+            effets_mission.fermer()
+    except Exception:
+        pass
+
+
+# v25 : fichiers indispensables effaces pendant que le traqueur tourne -> message en francais et redemarrage (une fois)
+SURVEILLANCE = acm_robustesse.Surveillance(journal=lambda t: journal(t), avant_relance=_avant_relance, certificats=CERTIFICATS)
+if getattr(sys, 'frozen', False):
+    try:
+        acm_robustesse.nettoyer_runtime(garder=getattr(sys, '_MEIPASS', None))   # restes d'anciens lancements
+    except Exception:
+        pass
+    if acm_robustesse.est_relance(sys.argv):
+        print("✅ Traqueur redémarré avec des fichiers neufs.")
 
 
 def charger_config():
@@ -1624,6 +1675,7 @@ def connecter_simconnect():
             installer_maj_en_attente(intervalle=10)
         except Exception:
             pass
+        SURVEILLANCE.verifier()   # v25 : fichiers effaces pendant l'attente du simulateur -> redemarrage
         try:
             sim = ouvrir_simconnect(SimConnect, DELAI_SIMCONNECT)   # v22 : ne peut plus rester bloque si le simulateur se ferme
             aq = AircraftRequests(sim, _time=50)
@@ -1894,6 +1946,8 @@ pilotage = Pilotage()
 try:
     while True:
         try:
+            # v25 : fichiers indispensables effaces (nettoyage de TEMP...) -> message et redemarrage ; verifie toutes les 15 s
+            SURVEILLANCE.verifier()
             # v23 : touche C dans cette fenetre -> commandes de tir (touches et boutons de manette)
             touche_console_commandes()
             # v21 : mises a jour mises de cote (tablette, effets, personnages...) : installees des que le simulateur est ferme
@@ -2013,6 +2067,7 @@ try:
                     print(f"👨‍⚖️ Verdict du Juge : {reponse.json().get('message', 'Envoyé')}")
                 except Exception as e:
                     print(f"❌ Erreur de communication avec le serveur web : {e}")
+                    SURVEILLANCE.verifier(force=True)   # v25 : fichiers effaces ? redemarrage tout de suite
 
             etat_precedent_sol = sim_on_ground
             if not paquet_incomplet:

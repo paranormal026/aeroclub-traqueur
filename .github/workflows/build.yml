@@ -18,7 +18,7 @@ jobs:
           python-version: '3.12'
 
       - name: Install dependencies
-        run: pip install pyinstaller requests SimConnect
+        run: pip install pyinstaller requests SimConnect truststore
 
       - name: Replace SimConnect.dll with the MSFS 2024 SDK version
         shell: pwsh
@@ -47,11 +47,18 @@ jobs:
       - name: Tests v24 (mise a jour des services au sol - nos programmes fermes simulateur ferme, raison toujours donnee, maj_sol_en_attente.txt)
         run: python tests/test_v24.py
 
+      - name: Tests v25 (fichiers temporaires effaces - certificats hors de TEMP, magasin Windows, auto-reparation, dossier runtime)
+        run: python tests/test_v25.py
+
       - name: Build veilleur
-        run: pyinstaller --onefile --noconsole --name acm_veilleur --icon installateur/acm.ico --add-data "voix_veilleur;voix_veilleur" --add-binary "SimConnect.dll;." acm_veilleur.py
+        run: pyinstaller --onefile --noconsole --runtime-tmpdir "%LOCALAPPDATA%\AeroClubManager\runtime" --name acm_veilleur --icon installateur/acm.ico --add-data "voix_veilleur;voix_veilleur" --add-binary "SimConnect.dll;." acm_veilleur.py
 
       - name: Build exe
-        run: pyinstaller --onefile --name traqueur --icon installateur/acm.ico --add-binary "SimConnect.dll;SimConnect" --add-data "dist/acm_veilleur.exe;." traqueur.py
+        run: pyinstaller --onefile --runtime-tmpdir "%LOCALAPPDATA%\AeroClubManager\runtime" --name traqueur --icon installateur/acm.ico --add-binary "SimConnect.dll;SimConnect" --add-data "dist/acm_veilleur.exe;." traqueur.py
+
+      - name: v25 - exe decompresses dans %LOCALAPPDATA%\AeroClubManager\runtime, jamais dans TEMP
+        shell: pwsh
+        run: ./tests/runtime_v25.ps1 -Dist dist
 
       - uses: actions/upload-artifact@v4
         with:

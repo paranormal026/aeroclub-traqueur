@@ -6,7 +6,7 @@ name: Installateur AeroClubManager
 on:
   workflow_dispatch:
   push:
-    branches: [installateur, plan-efb, v19, ravitailleur, v21, v22, v24]
+    branches: [installateur, plan-efb, v19, ravitailleur, v21, v22, v24, v25]
 
 jobs:
   installateur:
@@ -23,7 +23,7 @@ jobs:
           python-version: '3.12'
 
       - name: Dependances
-        run: pip install pyinstaller requests SimConnect
+        run: pip install pyinstaller requests SimConnect truststore
 
       - name: SimConnect.dll du SDK MSFS 2024
         shell: pwsh
@@ -55,14 +55,21 @@ jobs:
       - name: Tests v24 (mise a jour des services au sol - nos programmes fermes simulateur ferme, raison toujours donnee, maj_sol_en_attente.txt)
         run: python tests/test_v24.py
 
+      - name: Tests v25 (fichiers temporaires effaces - certificats hors de TEMP, magasin Windows, auto-reparation, dossier runtime)
+        run: python tests/test_v25.py
+
       - name: Compilation de traqueur.py (verification de syntaxe)
-        run: python -m py_compile traqueur.py acm_installation.py acm_plan_sim.py acm_veilleur.py acm_diag_msfs.py acm_carburant.py
+        run: python -m py_compile traqueur.py acm_installation.py acm_plan_sim.py acm_veilleur.py acm_diag_msfs.py acm_carburant.py acm_robustesse.py
 
       - name: Construction du veilleur (acm_veilleur.exe, sans console, voix incluses)
-        run: pyinstaller --onefile --noconsole --name acm_veilleur --icon installateur/acm.ico --add-data "voix_veilleur;voix_veilleur" --add-binary "SimConnect.dll;." acm_veilleur.py
+        run: pyinstaller --onefile --noconsole --runtime-tmpdir "%LOCALAPPDATA%\AeroClubManager\runtime" --name acm_veilleur --icon installateur/acm.ico --add-data "voix_veilleur;voix_veilleur" --add-binary "SimConnect.dll;." acm_veilleur.py
 
       - name: Construction de traqueur.exe (veilleur embarque)
-        run: pyinstaller --onefile --name traqueur --icon installateur/acm.ico --add-binary "SimConnect.dll;SimConnect" --add-data "dist/acm_veilleur.exe;." traqueur.py
+        run: pyinstaller --onefile --runtime-tmpdir "%LOCALAPPDATA%\AeroClubManager\runtime" --name traqueur --icon installateur/acm.ico --add-binary "SimConnect.dll;SimConnect" --add-data "dist/acm_veilleur.exe;." traqueur.py
+
+      - name: v25 - exe decompresses dans %LOCALAPPDATA%\AeroClubManager\runtime, jamais dans TEMP
+        shell: pwsh
+        run: ./tests/runtime_v25.ps1 -Dist dist
 
       - name: Certificat (seulement si configure)
         if: env.ACM_CERT_PFX != ''

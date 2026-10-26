@@ -411,6 +411,12 @@ def exe_xml_inscrit(dossier=None):
 
 def main():
     global PERIODE_S, PRET_AU_PLUS_TOT_S, PRET_AU_PLUS_TARD_S, DELAI_EXE_XML_INSCRIT_S, DELAI_EXE_XML_ABSENT_S, ATTENTE_DEMARRAGE_S
+    for a in sys.argv[1:]:
+        if a.startswith("--diag-runtime="):   # v25, tests GitHub Actions : ou l'exe s'est decompresse (fichier JSON), puis sortie
+            import acm_robustesse
+            with open(a[len("--diag-runtime="):], "w", encoding="utf-8") as f:
+                json.dump(acm_robustesse.rapport_runtime(), f)
+            return 0
     if os.environ.get("ACM_VEILLEUR_TEST_RAPIDE") == "1":   # tests GitHub Actions uniquement : delais courts
         PERIODE_S, PRET_AU_PLUS_TOT_S, PRET_AU_PLUS_TARD_S = 1, 2, 4
         DELAI_EXE_XML_INSCRIT_S, DELAI_EXE_XML_ABSENT_S, ATTENTE_DEMARRAGE_S = 4, 1, 30

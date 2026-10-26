@@ -783,6 +783,16 @@ def desinstaller(dossier_app, chemin_exe, journal=_dire):
             journal("Veilleur retiré du démarrage de Windows.")
     except Exception as e:
         journal(f"Veilleur : démarrage de Windows non modifié ({e})")
+    # v25 : restes de decompression (traqueur ou veilleur fermes brutalement) dans le dossier runtime (%LOCALAPPDATA%, AeroClubManager) ;
+    # seuls les dossiers _MEI... qui ne servent plus (renommage accepte par Windows) sont retires, jamais celui en cours
+    try:
+        import acm_robustesse
+        if bilan.get("veilleur"):
+            import time as _t
+            _t.sleep(1.0)   # veilleur arrete a l'instant : Windows libere ses fichiers
+        bilan["runtime_retires"] = acm_robustesse.nettoyer_runtime(garder=getattr(sys, "_MEIPASS", None), age_min_s=0)
+    except Exception as e:
+        journal(f"Dossier runtime non nettoyé ({e})")
     return bilan
 
 

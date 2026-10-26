@@ -60,12 +60,40 @@ Write-Host "2. Premier lancement du traqueur : liaison, premier contact, lanceme
 '{"lancement_auto_ignore": true}' | Set-Content "$app\config.json" -Encoding utf8
 $env:ACM_TRAQUEUR_URL_TEST = "http://127.0.0.1:8765"
 $env:ACM_VEILLEUR_TEST_RAPIDE = "1"   # veilleur : 3 s d'attente au lieu de 45 s (tests seulement)
+$debutTraqueur = Get-Date
 $t = Start-Process -PassThru -FilePath "$app\traqueur.exe" -WorkingDirectory $app -RedirectStandardOutput "$travail\traqueur.txt" -RedirectStandardError "$travail\traqueur_err.txt"
 $fin = (Get-Date).AddSeconds(90); $ev = @()
 while ((Get-Date) -lt $fin) {
   Start-Sleep 2
   if (Test-Path $journal) { try { $ev = Get-Content $journal -Raw | ConvertFrom-Json } catch {} }
   if (@($ev | Where-Object { $_.action -eq "contact" -and $_.etape -eq "pret" }).Count -ge 1) { break }
+}
+
+Write-Host "2a. v25 : decompression hors de TEMP, puis nettoyage de TEMP simule pendant que le traqueur tourne"
+$meiTraqueur = @(Get-ChildItem "$app\runtime" -Directory -Filter "_MEI*" -ErrorAction SilentlyContinue | Where-Object { Test-Path "$($_.FullName)\acm_veilleur.exe" })
+Verif ($meiTraqueur.Count -eq 1) "traqueur decompresse dans %LOCALAPPDATA%\AeroClubManager\runtime : $($meiTraqueur.FullName -join ', ')"
+$meiTemp = @(Get-ChildItem $env:TEMP, $env:TMP -Directory -Filter "_MEI*" -ErrorAction SilentlyContinue | Where-Object { $_.CreationTime -gt $debutTraqueur })
+Verif ($meiTemp.Count -eq 0) "rien decompresse dans TEMP : $($meiTemp.FullName -join ', ')"
+Verif (Test-Path "$app\certificats\cacert.pem") "copie stable des certificats dans %LOCALAPPDATA%\AeroClubManager\certificats"
+if ($meiTraqueur.Count -eq 1) {
+  # comme « del /f /s /q %TEMP%\* » le 26/10 : les fichiers non verrouilles disparaissent (cacert.pem, voix, base_library.zip...)
+  Get-ChildItem $meiTraqueur[0].FullName -Recurse -File | ForEach-Object { Remove-Item $_.FullName -Force -ErrorAction SilentlyContinue }
+  $restants = @(Get-ChildItem $meiTraqueur[0].FullName -Recurse -File).Count
+  Write-Host "      fichiers verrouilles restants (DLL chargees) : $restants"
+  $fin = (Get-Date).AddSeconds(45); $relance = $null
+  while (-not $relance -and (Get-Date) -lt $fin) {
+    Start-Sleep 2
+    $relance = Get-CimInstance Win32_Process -Filter "Name = 'traqueur.exe'" | Where-Object { $_.CommandLine -match "--relance-auto=\d+" } | Select-Object -First 1
+  }
+  Verif ($null -ne $relance) "traqueur relance automatiquement (--relance-auto)"
+  $jt = Get-Content "$app\traqueur_journal.txt" -Raw -Encoding utf8 -ErrorAction SilentlyContinue
+  Verif ($jt -match "Fichiers temporaires effacés par Windows : redémarrage du traqueur") "message en francais dans traqueur_journal.txt"
+  $fin = (Get-Date).AddSeconds(30)
+  while ((Get-Date) -lt $fin -and -not (Get-ChildItem "$app\runtime" -Directory -Filter "_MEI*" -ErrorAction SilentlyContinue | Where-Object { $_.FullName -ne $meiTraqueur[0].FullName -and (Test-Path "$($_.FullName)\certifi\cacert.pem") })) { Start-Sleep 1 }
+  Verif (@(Get-ChildItem "$app\runtime" -Directory -Filter "_MEI*" | Where-Object { $_.FullName -ne $meiTraqueur[0].FullName -and (Test-Path "$($_.FullName)\certifi\cacert.pem") }).Count -ge 1) "nouveau traqueur : fichiers neufs dans le dossier runtime"
+  Start-Sleep 8
+  $n = @(Get-Process traqueur -ErrorAction SilentlyContinue).Count
+  Verif ($n -le 2) "un seul traqueur apres la relance (lanceur + programme) : $n processus"
 }
 # traqueur.exe (PyInstaller) = 2 processus : le lanceur ET le programme. On ferme les deux, comme la croix de la fenetre.
 Get-Process traqueur -ErrorAction SilentlyContinue | Stop-Process -Force

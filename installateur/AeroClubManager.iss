@@ -99,6 +99,9 @@ Type: files; Name: "{app}\acm_veilleur.exe.tmp"
 Type: files; Name: "{app}\veilleur_journal.txt*"
 Type: files; Name: "{app}\traqueur_journal.txt*"
 Type: filesandordirs; Name: "{app}\plans_de_vol"
+; v25 : decompression de traqueur.exe / acm_veilleur.exe (au lieu de TEMP) et copie stable des certificats de securite
+Type: filesandordirs; Name: "{app}\runtime"
+Type: filesandordirs; Name: "{app}\certificats"
 Type: dirifempty; Name: "{app}"
 
 [Code]
