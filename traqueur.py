@@ -60,7 +60,7 @@ BASE_URL = "https://aeroclubmanager.fr/msfs"
 # Tests automatiques uniquement (GitHub Actions) : faux site local sur 127.0.0.1, jamais une autre adresse
 if re.match(r"^http://127\.0\.0\.1:\d+$", os.environ.get("ACM_TRAQUEUR_URL_TEST", "")):
     BASE_URL = os.environ["ACM_TRAQUEUR_URL_TEST"]
-VERSION_ACTUELLE = 26
+VERSION_ACTUELLE = 27
 DOSSIER_TRAQUEUR = os.path.dirname(os.path.abspath(sys.argv[0]))
 CONFIG_PATH = os.path.join(DOSSIER_TRAQUEUR, 'config.json')
 PAGE_INSTALLATION = "https://aeroclubmanager.fr/msfs/installer.php"
@@ -1941,6 +1941,7 @@ services_sol = ServicesSol()
 pannes_reelles = PannesReelles()
 # v20 : carburant reel des missions (reservoirs regles au depart, ravitaillement en vol), consignes du site (acm_carburant.py)
 # v26 : reservoirs refuses par l'appareil detectes et ecartes, quantite reellement recue mesuree et envoyee au site
+# v27 : quantite reellement recue mesuree sur FUEL TOTAL QUANTITY (reservoir cache de l'EF2000 compris : plus de livraison de trop)
 import acm_carburant
 carburant_missions = acm_carburant.Carburant(DOSSIER_TRAQUEUR, journal=print)
 pilotage = Pilotage()

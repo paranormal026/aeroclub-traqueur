@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Traqueur v20 (21/10/2026), v26 (27/10/2026) : carburant reel dans le simulateur pour les missions du site.
+"""Traqueur v20 (21/10/2026), v26 (27/10/2026), v27 (27/10/2026) : carburant reel dans le simulateur pour les missions du site.
 
 Le site (api_tracker.php, cle « carburant » de la reponse a chaque paquet) envoie :
   regler    : {"id": "m123-depart", "pct": 28}
@@ -23,6 +23,12 @@ carburant perdu, alors que le site comptait tout. Maintenant :
     (telemetrie « carb_recu »), qui compte ces livres-la ; ce qui n'est pas entre est redonne aux paquets suivants (aucune perte) ;
   - reservoirs refuses retenus par appareil (titre) et par situation (au sol / en vol) dans carburant_etat.json (reessayes une
     fois par session du traqueur) ; capacite utilisable envoyee au site (carb_cap_ok_lb, carb_ok_lb, carb_refuses).
+v27 (27/10/2026, essai du raid, EF2000 du simulateur) : l'EF2000 a aussi un reservoir CACHE (~293 gal) qui n'est aucun des 11
+reservoirs nommes ; « FUEL TOTAL QUANTITY » le compte. Pendant le contact, ce reservoir cache se remplit en puisant dans les
+reservoirs visibles : la somme des reservoirs nommes baissait, le traqueur v26 comptait ce carburant comme « perdu » et le
+redonnait (environ 5 % de trop aux ravitailleurs 3 et 4). Le carburant reellement recu est maintenant mesure sur
+« FUEL TOTAL QUANTITY » (tout l'avion, reservoirs caches compris, comme la consommation des moteurs mesuree par observer()) ;
+si cette variable manque ou n'est pas plausible : somme des reservoirs nommes (comme v26).
 Ce qui a deja ete ajoute est garde dans carburant_etat.json (dossier du traqueur) : un redemarrage du traqueur pendant le
 ravitaillement n'ajoute jamais deux fois le meme carburant.
 
@@ -153,6 +159,22 @@ class Carburant:
             except Exception:
                 continue
         return l
+
+    @staticmethod
+    def total_avion(get, res):
+        """v27 : carburant de tout l'avion (gal), reservoirs caches compris (« FUEL TOTAL QUANTITY ») ; None si la variable manque
+        ou n'est pas plausible (inferieure a la somme des reservoirs nommes, qu'elle comprend)."""
+        try:
+            v = get("FUEL_TOTAL_QUANTITY")
+            if v is None:
+                return None
+            v = float(v)
+        except Exception:
+            return None
+        somme = sum(q for _, q, _ in res)
+        if not (v == v) or v < 0 or v > 1e6 or v < somme - max(0.5, 0.01 * somme):
+            return None
+        return v
 
     @staticmethod
     def lb_par_gallon(get):
@@ -303,7 +325,7 @@ class Carburant:
                          % (round(q_ok / cap_ok * 100) if cap_ok > 0 else 0, round(q_ok * lbg), round(cap_ok * lbg)))
 
     # ------------------------------------------------------------------ ravitaillement en vol
-    def _evaluer(self, res, au_sol):
+    def _evaluer(self, res, au_sol, tot_avion=None):
         """Verifie l'ecriture du paquet precedent : carburant reellement entre, reservoirs refuses."""
         a = self.attente
         self.attente = None
@@ -314,9 +336,16 @@ class Carburant:
             return
         q = {n: x for n, x, _ in res}
         tot = sum(q.values())
+        # v27 : carburant reellement entre mesure sur tout l'avion (reservoirs caches compris) quand la variable est lisible
+        # aux deux lectures ; sinon somme des reservoirs nommes (v26)
+        total = tot_avion if a.get("avion0") is not None else None
+        if total is not None:
+            tot, tot0 = total, a["avion0"]
+        else:
+            tot0 = a["tot0"]
         dt = max(0.0, min(10.0, self.horloge() - a["t"]))
         ecrit = sum(a["ecrit"].values())
-        gain = tot - a["tot0"] + self.conso_gal_s * dt
+        gain = tot - tot0 + self.conso_gal_s * dt
         recu = max(0.0, min(ecrit, gain))
         perdu_lb = (ecrit - recu) * a["lbg"]
         if perdu_lb > 0.5:
@@ -394,8 +423,9 @@ class Carburant:
             return 0.0
         res = self.reservoirs(get)
         lbg = self.lb_par_gallon(get)
+        tot_avion = self.total_avion(get, res) if res else None     # v27 : avant toute ecriture de ce paquet
         if res and self.attente:
-            self._evaluer(res, au_sol)
+            self._evaluer(res, au_sol, tot_avion)
         if res:
             self._noter_mesure(res, lbg, au_sol)
         deja = float(e.get("lb", 0.0))
@@ -464,7 +494,7 @@ class Carburant:
             return 0.0
         now = self.horloge()
         self.derniere_ecriture = now
-        self.attente = {"id": tid, "t": now, "tot0": sum(q for _, q, _ in res), "ecrit": ecrit, "q0": q0, "lbg": lbg, "essai": essai}
+        self.attente = {"id": tid, "t": now, "tot0": sum(q for _, q, _ in res), "avion0": tot_avion, "ecrit": ecrit, "q0": q0, "lbg": lbg, "essai": essai}
         w_lb = w_gal * lbg
         e["lb"] = deja + w_lb            # compte provisoirement (aucun double apres un redemarrage) ; corrige au paquet suivant
         e["att"] = w_lb
