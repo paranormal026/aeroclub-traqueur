@@ -50,6 +50,9 @@ jobs:
       - name: Tests v25 (fichiers temporaires effaces - certificats hors de TEMP, magasin Windows, auto-reparation, dossier runtime)
         run: python tests/test_v25.py
 
+      - name: Tests v26 (reservoirs refuses par l'appareil - EF2000 - ecartes, plein et pourcentages des reservoirs qui acceptent, livres reellement recues, aucune perte)
+        run: python tests/test_v26.py
+
       - name: Build veilleur
         run: pyinstaller --onefile --noconsole --runtime-tmpdir "%LOCALAPPDATA%\AeroClubManager\runtime" --name acm_veilleur --icon installateur/acm.ico --add-data "voix_veilleur;voix_veilleur" --add-binary "SimConnect.dll;." acm_veilleur.py
 

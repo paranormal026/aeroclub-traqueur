@@ -6,7 +6,7 @@ name: Installateur AeroClubManager
 on:
   workflow_dispatch:
   push:
-    branches: [installateur, plan-efb, v19, ravitailleur, v21, v22, v24, v25]
+    branches: [installateur, plan-efb, v19, ravitailleur, v21, v22, v24, v25, v26]
 
 jobs:
   installateur:
@@ -57,6 +57,9 @@ jobs:
 
       - name: Tests v25 (fichiers temporaires effaces - certificats hors de TEMP, magasin Windows, auto-reparation, dossier runtime)
         run: python tests/test_v25.py
+
+      - name: Tests v26 (reservoirs refuses par l'appareil - EF2000 - ecartes, plein et pourcentages des reservoirs qui acceptent, livres reellement recues, aucune perte)
+        run: python tests/test_v26.py
 
       - name: Compilation de traqueur.py (verification de syntaxe)
         run: python -m py_compile traqueur.py acm_installation.py acm_plan_sim.py acm_veilleur.py acm_diag_msfs.py acm_carburant.py acm_robustesse.py

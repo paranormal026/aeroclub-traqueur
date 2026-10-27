@@ -60,7 +60,7 @@ BASE_URL = "https://aeroclubmanager.fr/msfs"
 # Tests automatiques uniquement (GitHub Actions) : faux site local sur 127.0.0.1, jamais une autre adresse
 if re.match(r"^http://127\.0\.0\.1:\d+$", os.environ.get("ACM_TRAQUEUR_URL_TEST", "")):
     BASE_URL = os.environ["ACM_TRAQUEUR_URL_TEST"]
-VERSION_ACTUELLE = 25
+VERSION_ACTUELLE = 26
 DOSSIER_TRAQUEUR = os.path.dirname(os.path.abspath(sys.argv[0]))
 CONFIG_PATH = os.path.join(DOSSIER_TRAQUEUR, 'config.json')
 PAGE_INSTALLATION = "https://aeroclubmanager.fr/msfs/installer.php"
@@ -1940,6 +1940,7 @@ effets_mission = EffetsMission()
 services_sol = ServicesSol()
 pannes_reelles = PannesReelles()
 # v20 : carburant reel des missions (reservoirs regles au depart, ravitaillement en vol), consignes du site (acm_carburant.py)
+# v26 : reservoirs refuses par l'appareil detectes et ecartes, quantite reellement recue mesuree et envoyee au site
 import acm_carburant
 carburant_missions = acm_carburant.Carburant(DOSSIER_TRAQUEUR, journal=print)
 pilotage = Pilotage()
@@ -1997,6 +1998,9 @@ try:
                 fuel_qty = aq.get("FUEL_TOTAL_QUANTITY") or 0.0
                 fuel_cap = aq.get("FUEL_TOTAL_CAPACITY") or 1.0
                 fuel_percent = (fuel_qty / fuel_cap) * 100 if fuel_cap > 0 else 100.0
+                # v26 : consommation des moteurs (carburant reellement recu au ravitaillement en vol, acm_carburant.py)
+                if not paquet_incomplet:
+                    carburant_missions.observer(fuel_qty)
             except Exception:
                 # MSFS a probablement été fermé ou n'a pas encore terminé de charger : on retente une connexion propre
                 print("⚠️ Connexion à MSFS perdue ou non prête. Nouvelle tentative...")
@@ -2123,6 +2127,14 @@ try:
                 "aircraft_model": titre_avion
             }
             status_data.update(extra)
+            # v26 : capacite des seuls reservoirs qui acceptent le carburant, carburant reellement recu du ravitailleur (mesure)
+            if not paquet_incomplet:
+                try:
+                    carburant_missions.titre = titre_avion
+                    carburant_missions.mesurer(aq.get, on_ground == 1)
+                    status_data.update(carburant_missions.telemetrie())
+                except Exception:
+                    pass
 
             reponse_serveur = None if paquet_incomplet else envoyer_telemetrie_live(status_data)
             pannes_reelles.appliquer(sim, (reponse_serveur or {}).get('pannes'))

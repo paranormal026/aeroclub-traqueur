@@ -418,7 +418,7 @@ class TestAutoReparation(Dossiers):
 # ------------------------------------------------------------------ 4. traqueur.py
 class TestTraqueurSource(unittest.TestCase):
     def test_version_et_branchements(self):
-        self.assertEqual(int(re.search(r"^VERSION_ACTUELLE = (\d+)", SOURCE, re.M).group(1)), 25)
+        self.assertGreaterEqual(int(re.search(r"^VERSION_ACTUELLE = (\d+)", SOURCE, re.M).group(1)), 25)   # v26 : 25 ou plus
         i_cert = SOURCE.index("CERTIFICATS.preparer()")
         self.assertLess(i_cert, SOURCE.index("import acm_installation"), "certificats prets avant tout appel au site")
         self.assertLess(i_cert, SOURCE.index("\nverifier_mise_a_jour()"))
