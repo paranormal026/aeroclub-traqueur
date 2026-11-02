@@ -6,7 +6,7 @@ name: Installateur AeroClubManager
 on:
   workflow_dispatch:
   push:
-    branches: [installateur, plan-efb, v19, ravitailleur, v21, v22, v24, v25, v26, v27, v28]
+    branches: [installateur, plan-efb, v19, ravitailleur, v21, v22, v24, v25, v26, v27, v28, v29]
 
 jobs:
   installateur:
