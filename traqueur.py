@@ -60,7 +60,7 @@ BASE_URL = "https://aeroclubmanager.fr/msfs"
 # Tests automatiques uniquement (GitHub Actions) : faux site local sur 127.0.0.1, jamais une autre adresse
 if re.match(r"^http://127\.0\.0\.1:\d+$", os.environ.get("ACM_TRAQUEUR_URL_TEST", "")):
     BASE_URL = os.environ["ACM_TRAQUEUR_URL_TEST"]
-VERSION_ACTUELLE = 27
+VERSION_ACTUELLE = 28
 DOSSIER_TRAQUEUR = os.path.dirname(os.path.abspath(sys.argv[0]))
 CONFIG_PATH = os.path.join(DOSSIER_TRAQUEUR, 'config.json')
 PAGE_INSTALLATION = "https://aeroclubmanager.fr/msfs/installer.php"
@@ -1943,6 +1943,7 @@ pannes_reelles = PannesReelles()
 # v26 : reservoirs refuses par l'appareil detectes et ecartes, quantite reellement recue mesuree et envoyee au site
 # v27 : quantite reellement recue mesuree sur FUEL TOTAL QUANTITY (reservoir cache de l'EF2000 compris : plus de livraison de trop)
 import acm_carburant
+import acm_annonce   # v28 : annonce des mises a jour du site (fenetre du traqueur)
 carburant_missions = acm_carburant.Carburant(DOSSIER_TRAQUEUR, journal=print)
 pilotage = Pilotage()
 
@@ -1972,7 +1973,9 @@ try:
                     t = aq.get("TITLE")
                     if isinstance(t, bytes):
                         t = t.decode("utf-8", "ignore")
-                    titre_avion = (t or "").replace("\x00", "").strip()
+                    titre_lu = (t or "").replace("\x00", "").strip()
+                    if titre_lu:   # v28 (02/11/2026) : un nom lu vide quelques secondes (transport AcmSaut) n'est pas un changement d'appareil
+                        titre_avion = titre_lu
                 except Exception:
                     pass
 
@@ -2139,6 +2142,7 @@ try:
 
             reponse_serveur = None if paquet_incomplet else envoyer_telemetrie_live(status_data)
             pannes_reelles.appliquer(sim, (reponse_serveur or {}).get('pannes'))
+            acm_annonce.afficher_annonce((reponse_serveur or {}).get('annonce'))   # v28 : une fois par etape, jamais bloquant
             # v20 : carburant des missions (jamais sur un paquet incomplet ou une position fictive)
             if reponse_serveur and not position_fictive:
                 try:

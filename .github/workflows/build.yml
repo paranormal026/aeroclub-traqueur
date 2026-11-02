@@ -56,6 +56,9 @@ jobs:
       - name: Tests v27 (reservoir cache de l'EF2000 - carburant reellement recu mesure sur FUEL TOTAL QUANTITY, aucune livraison de trop)
         run: python tests/test_v27.py
 
+      - name: Tests v28 (annonce des mises a jour du site affichee une fois par etape dans la fenetre du traqueur)
+        run: python tests/test_v28.py
+
       - name: Build veilleur
         run: pyinstaller --onefile --noconsole --runtime-tmpdir "%LOCALAPPDATA%\AeroClubManager\runtime" --name acm_veilleur --icon installateur/acm.ico --add-data "voix_veilleur;voix_veilleur" --add-binary "SimConnect.dll;." acm_veilleur.py
 
