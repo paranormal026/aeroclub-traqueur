@@ -67,6 +67,9 @@ jobs:
       - name: Tests v28 (annonce des mises a jour du site affichee une fois par etape dans la fenetre du traqueur)
         run: python tests/test_v28.py
 
+      - name: Tests v29 (paquet Pistes des pilotes installe par le traqueur, simulateur ferme)
+        run: python tests/test_v29.py
+
       - name: Compilation de traqueur.py (verification de syntaxe)
         run: python -m py_compile traqueur.py acm_installation.py acm_plan_sim.py acm_veilleur.py acm_diag_msfs.py acm_carburant.py acm_robustesse.py acm_annonce.py
 

@@ -60,7 +60,7 @@ BASE_URL = "https://aeroclubmanager.fr/msfs"
 # Tests automatiques uniquement (GitHub Actions) : faux site local sur 127.0.0.1, jamais une autre adresse
 if re.match(r"^http://127\.0\.0\.1:\d+$", os.environ.get("ACM_TRAQUEUR_URL_TEST", "")):
     BASE_URL = os.environ["ACM_TRAQUEUR_URL_TEST"]
-VERSION_ACTUELLE = 28
+VERSION_ACTUELLE = 29
 DOSSIER_TRAQUEUR = os.path.dirname(os.path.abspath(sys.argv[0]))
 CONFIG_PATH = os.path.join(DOSSIER_TRAQUEUR, 'config.json')
 PAGE_INSTALLATION = "https://aeroclubmanager.fr/msfs/installer.php"
@@ -971,6 +971,79 @@ def installer_effets_mission():
 
 
 lancer_installation("effets", installer_effets_mission, "des effets de mission (feux, fumigènes)")
+
+
+# v29 (02/11/2026, fermes pour tous) : paquet « Pistes des pilotes » : pistes en herbe des fermes et helipads que les pilotes ont
+# inscrits sur les cartes du simulateur (carte du monde, GPS, depart possible dessus). Compile chaque nuit sur le PC du proprietaire,
+# quelques Ko ; remplace a chaque nouvelle version, seulement simulateur ferme (MSFS ne lit les paquets qu'au demarrage).
+NOM_PAQUET_PISTES = "aeroclubmanager-pistes"
+
+
+def installer_pistes_pilotes():
+    """Installe (ou met a jour) le paquet des pistes et helipads inscrits par les pilotes du club."""
+    if not getattr(sys, 'frozen', False):
+        return
+    import io
+    import shutil
+    import tempfile
+    import zipfile
+
+    cfg = charger_config()
+    dossiers = dossiers_msfs(cfg)
+    communautes = [c for c in (dossier_community(d) for d in dossiers) if c]
+    if not communautes:
+        return community_introuvable(dossiers)
+    try:
+        version = requests.get(f"{BASE_URL}/api_efb.php", params={"action": "package_info", "name": "pistes", "api_token": API_TOKEN}, timeout=10).json().get("version")
+    except Exception:
+        return False   # site injoignable -> nouvel essai automatique
+    if not version:
+        return         # fonction pas encore en ligne : rien a installer
+    installe = cfg.get('pistes_installe', {})
+    a_faire = []
+    for c in communautes:
+        try:
+            with open(os.path.join(c, NOM_PAQUET_PISTES, "manifest.json"), encoding="utf-8") as f:
+                deja = json.load(f).get("package_version")
+        except Exception:
+            deja = None
+        if deja != version:
+            a_faire.append(c)
+    if not a_faire:
+        return
+    quoi = "des pistes des pilotes (cartes du simulateur)"
+    if reporter_si_msfs_ouvert("pistes", installer_pistes_pilotes, message_attente(quoi, version), quoi, version):
+        return
+    print(f"🗺️ Installation des pistes et hélipads des pilotes dans MSFS (version {version})...")
+    r = requests.get(f"{BASE_URL}/api_efb.php", params={"action": "package", "name": "pistes", "api_token": API_TOKEN}, timeout=60)
+    r.raise_for_status()
+    if reporter_si_msfs_ouvert("pistes", installer_pistes_pilotes, message_attente(quoi, version), quoi, version):
+        return
+    tmp = tempfile.mkdtemp(prefix="acm_pistes_")
+    try:
+        with zipfile.ZipFile(io.BytesIO(r.content)) as z:
+            # seulement le dossier du paquet, jamais un chemin qui en sort
+            noms = [n for n in z.namelist() if n.startswith(NOM_PAQUET_PISTES + "/") and ".." not in n]
+            z.extractall(tmp, members=noms)
+        source = os.path.join(tmp, NOM_PAQUET_PISTES)
+        if not os.path.isfile(os.path.join(source, "manifest.json")):
+            print("⚠️ Paquet des pistes incomplet : rien n'est remplacé.")
+            return
+        for communaute in a_faire:
+            cible = os.path.join(communaute, NOM_PAQUET_PISTES)
+            if os.path.isdir(cible):
+                shutil.rmtree(cible)
+            shutil.copytree(source, cible)
+            regenerer_layout(cible)
+            installe[communaute] = version
+            print(f"✅ Pistes des pilotes installées dans {cible} (sur la carte au prochain démarrage de MSFS).")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    cfg['pistes_installe'] = installe
+    sauver_config(cfg)
+
+
+lancer_installation("pistes", installer_pistes_pilotes, "des pistes des pilotes (cartes du simulateur)")
 
 
 NOM_PAQUET_PERSOS = "aeroclubmanager-persos"

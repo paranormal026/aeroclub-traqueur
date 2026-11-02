@@ -59,6 +59,9 @@ jobs:
       - name: Tests v28 (annonce des mises a jour du site affichee une fois par etape dans la fenetre du traqueur)
         run: python tests/test_v28.py
 
+      - name: Tests v29 (paquet Pistes des pilotes installe par le traqueur, simulateur ferme)
+        run: python tests/test_v29.py
+
       - name: Build veilleur
         run: pyinstaller --onefile --noconsole --runtime-tmpdir "%LOCALAPPDATA%\AeroClubManager\runtime" --name acm_veilleur --icon installateur/acm.ico --add-data "voix_veilleur;voix_veilleur" --add-binary "SimConnect.dll;." acm_veilleur.py
 

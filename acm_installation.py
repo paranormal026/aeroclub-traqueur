@@ -27,6 +27,7 @@ PAQUETS_TRAQUEUR = {
     "fx_installe": "aeroclubmanager-fx",
     "persos_installe": "aeroclubmanager-persos",
     "acm400_installe": "aeroclubmanager-acm400",
+    "pistes_installe": "aeroclubmanager-pistes",   # v29 (02/11/2026) : pistes et helipads des pilotes
 }
 
 # Ou MSFS 2024 range son UserCfg.opt (le plus courant d'abord)
