@@ -6,7 +6,7 @@ name: Installateur AeroClubManager
 on:
   workflow_dispatch:
   push:
-    branches: [installateur, plan-efb, v19, ravitailleur, v21, v22, v24, v25, v26, v27, v28, v29]
+    branches: [installateur, plan-efb, v19, ravitailleur, v21, v22, v24, v25, v26, v27, v28, v29, v30]
 
 jobs:
   installateur:
@@ -70,8 +70,11 @@ jobs:
       - name: Tests v29 (paquet Pistes des pilotes installe par le traqueur, simulateur ferme)
         run: python tests/test_v29.py
 
+      - name: Tests v30 (AeroClubManager Panneaux lance par le traqueur seulement si un panneau est branche, jamais en double ni avec le logiciel d'origine)
+        run: python tests/test_v30.py
+
       - name: Compilation de traqueur.py (verification de syntaxe)
-        run: python -m py_compile traqueur.py acm_installation.py acm_plan_sim.py acm_veilleur.py acm_diag_msfs.py acm_carburant.py acm_robustesse.py acm_annonce.py
+        run: python -m py_compile traqueur.py acm_installation.py acm_plan_sim.py acm_veilleur.py acm_diag_msfs.py acm_carburant.py acm_robustesse.py acm_annonce.py acm_panneaux.py
 
       - name: Construction du veilleur (acm_veilleur.exe, sans console, voix incluses)
         run: pyinstaller --onefile --noconsole --runtime-tmpdir "%LOCALAPPDATA%\AeroClubManager\runtime" --name acm_veilleur --icon installateur/acm.ico --add-data "voix_veilleur;voix_veilleur" --add-binary "SimConnect.dll;." acm_veilleur.py

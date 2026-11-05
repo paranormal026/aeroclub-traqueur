@@ -60,7 +60,7 @@ BASE_URL = "https://aeroclubmanager.fr/msfs"
 # Tests automatiques uniquement (GitHub Actions) : faux site local sur 127.0.0.1, jamais une autre adresse
 if re.match(r"^http://127\.0\.0\.1:\d+$", os.environ.get("ACM_TRAQUEUR_URL_TEST", "")):
     BASE_URL = os.environ["ACM_TRAQUEUR_URL_TEST"]
-VERSION_ACTUELLE = 29
+VERSION_ACTUELLE = 30
 DOSSIER_TRAQUEUR = os.path.dirname(os.path.abspath(sys.argv[0]))
 CONFIG_PATH = os.path.join(DOSSIER_TRAQUEUR, 'config.json')
 PAGE_INSTALLATION = "https://aeroclubmanager.fr/msfs/installer.php"
@@ -1223,7 +1223,7 @@ def programmes_sol_en_cours(noms=None):
 # v24 : (24/10) la mise a jour des services au sol n'etait jamais installee, simulateur ferme, tant que la fenetre des
 # commandes de tir (AcmCommandes.exe) restait ouverte. Simulateur ferme, NOS programmes du dossier services_sol sont
 # fermes proprement (WM_CLOSE / taskkill sans /F, puis /F apres 5 s), uniquement par PID, jamais par nom d'image.
-PROGRAMMES_SOL_ACM = ("acmcommandes.exe", "acmpilotage.exe", "acmsol.exe", "acmsaut.exe")
+PROGRAMMES_SOL_ACM = ("acmcommandes.exe", "acmpilotage.exe", "acmsol.exe", "acmsaut.exe", "acmpanneaux.exe")   # v30 : panneaux
 FICHIER_MAJ_SOL = "maj_sol_en_attente.txt"   # lu par AcmCommandes.exe au demarrage (version prete, pas encore installee)
 
 
@@ -2019,6 +2019,18 @@ import acm_carburant
 import acm_annonce   # v28 : annonce des mises a jour du site (fenetre du traqueur)
 carburant_missions = acm_carburant.Carburant(DOSSIER_TRAQUEUR, journal=print)
 pilotage = Pilotage()
+# v30 (05/11/2026) : AeroClubManager Panneaux (AcmPanneaux.exe, services au sol 2.0.8) lance automatiquement pendant que le
+# simulateur tourne, seulement si un des trois panneaux USB est branche, jamais en double, jamais avec le logiciel d'origine
+# des panneaux ; reglage « panneaux_auto » de config.json (true par defaut, false pour ne jamais le lancer)
+import acm_panneaux
+try:
+    _cfg_pan = charger_config()
+    if acm_panneaux.CLE_CONFIG not in _cfg_pan:
+        _cfg_pan[acm_panneaux.CLE_CONFIG] = True   # ecrit une fois pour que le reglage soit visible dans config.json
+        sauver_config(_cfg_pan)
+except Exception:
+    pass
+lanceur_panneaux = acm_panneaux.LanceurPanneaux(DOSSIER_SOL, charger_config, journal)
 
 try:
     while True:
@@ -2085,6 +2097,12 @@ try:
                 pilotage.reinitialiser()
                 sim, aq = connecter_simconnect()
                 continue
+
+            # v30 : panneaux USB branches -> AeroClubManager Panneaux (verifie toutes les 5 s, une ligne au journal par changement)
+            try:
+                lanceur_panneaux.maj()
+            except Exception:
+                pass
 
             # Donnees des missions speciales : ecopage (sur l'eau), largage (chute de masse), vent pour la precision
             extra = {}

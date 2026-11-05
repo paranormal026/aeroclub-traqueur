@@ -62,6 +62,9 @@ jobs:
       - name: Tests v29 (paquet Pistes des pilotes installe par le traqueur, simulateur ferme)
         run: python tests/test_v29.py
 
+      - name: Tests v30 (AeroClubManager Panneaux lance par le traqueur seulement si un panneau est branche, jamais en double ni avec le logiciel d'origine)
+        run: python tests/test_v30.py
+
       - name: Build veilleur
         run: pyinstaller --onefile --noconsole --runtime-tmpdir "%LOCALAPPDATA%\AeroClubManager\runtime" --name acm_veilleur --icon installateur/acm.ico --add-data "voix_veilleur;voix_veilleur" --add-binary "SimConnect.dll;." acm_veilleur.py
 
